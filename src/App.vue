@@ -8,7 +8,9 @@ import {
   emptyDay,
   formatAuthError,
   importBackup,
+  isAuthorizedEmail,
   isCloudReady,
+  isFirebaseConfigured,
   loadCustomConfig,
   loadDays,
   loadLabs,
@@ -47,9 +49,13 @@ const loaded = ref(false)
 const today = todayKey()
 const authUser = ref(null)
 const authBusy = ref(false)
+const authReady = ref(false)
+const showFirebaseSetup = ref(false)
+const firebaseConfigured = isFirebaseConfigured()
 
+const isAuthorized = computed(() => !!(authUser.value && isAuthorizedEmail(authUser.value.email)))
 const todayData = computed(() => days.value[today] || emptyDay(today))
-const synced = computed(() => !!(authUser.value && isCloudReady()))
+const synced = computed(() => !!(isAuthorized.value && isCloudReady()))
 const syncBadge = computed(() => (synced.value ? '☁️ 已同步' : '💾 本機快取'))
 const userInitials = computed(() => {
   const u = authUser.value
@@ -59,7 +65,9 @@ const userInitials = computed(() => {
 })
 
 // Persist every user edit of presets / tags / targets / medications (localStorage + Firestore).
-onCustomConfigChange(() => saveCustomConfig(getCustomConfig()))
+onCustomConfigChange(() => {
+  if (isAuthorized.value) saveCustomConfig(getCustomConfig())
+})
 
 async function hydrateFromStorage() {
   applyCustomConfig(await loadCustomConfig())
@@ -67,12 +75,26 @@ async function hydrateFromStorage() {
   labs.value = await loadLabs()
 }
 
-onMounted(async () => {
-  await hydrateFromStorage()
-  loaded.value = true
-  onAuthStateChanged(async (user) => {
-    authUser.value = user
-    if (user) await hydrateFromStorage()
+function lockApp() {
+  authUser.value = null
+  days.value = {}
+  labs.value = []
+  loaded.value = false
+  showSettings.value = false
+  applyCustomConfig({})
+}
+
+onMounted(() => {
+  onAuthStateChanged(async (user, meta) => {
+    authReady.value = true
+    if (meta && meta.denied) showToast('⛔ 存取被拒：此帳號未獲授權')
+    if (user && isAuthorizedEmail(user.email)) {
+      authUser.value = user
+      await hydrateFromStorage()
+      loaded.value = true
+      return
+    }
+    lockApp()
   })
 })
 
@@ -127,12 +149,39 @@ async function handleSignOut() {
   authBusy.value = true
   try {
     await signOutUser()
-    authUser.value = null
+    lockApp()
   } catch (err) {
     showToast(formatAuthError(err))
   } finally {
     authBusy.value = false
   }
+}
+
+function openFirebaseSetup() {
+  const s = loadSettings()
+  settings.firebaseConfig = s.firebaseConfig || ''
+  settingsError.value = ''
+  showFirebaseSetup.value = true
+}
+
+function submitFirebaseSetup() {
+  settingsError.value = ''
+  const text = settings.firebaseConfig.trim()
+  if (text) {
+    const cfg = parseFirebaseConfig(text)
+    if (!cfg || !cfg.projectId) {
+      settingsError.value = 'Firebase 設定格式錯誤，需包含 projectId。'
+      return
+    }
+  }
+  const prev = loadSettings()
+  saveSettings({
+    geminiApiKey: prev.geminiApiKey || '',
+    firebaseConfig: text,
+    geminiModel: prev.geminiModel || DEFAULT_GEMINI_MODEL,
+  })
+  showFirebaseSetup.value = false
+  location.reload()
 }
 
 // Draft copy of targets + medications: only applied when the user presses 儲存.
@@ -263,9 +312,9 @@ async function importData(e) {
 </script>
 
 <template>
-  <div class="min-h-screen pb-24 md:pb-8">
+  <div>
     <!-- Global error toast (top of viewport, 6s / dismiss) -->
-    <div v-if="toast" class="fixed inset-x-0 top-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
+    <div v-if="toast" class="fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 pointer-events-none">
       <div
         role="alert"
         class="pointer-events-auto flex w-full max-w-4xl items-start gap-3 rounded-xl bg-rose-600 px-4 py-3 text-sm text-white shadow-lg"
@@ -281,6 +330,52 @@ async function importData(e) {
       </div>
     </div>
 
+    <div v-if="!authReady" class="grid min-h-screen place-items-center bg-slate-50">
+      <div class="flex flex-col items-center gap-3 text-slate-500">
+        <div class="size-10 animate-spin rounded-full border-4 border-slate-200 border-t-teal-600"></div>
+        <p class="text-sm">驗證登入狀態…</p>
+      </div>
+    </div>
+
+    <div v-else-if="!isAuthorized" class="grid min-h-screen place-items-center bg-slate-50 px-4">
+      <div class="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-slate-200">
+        <h1 class="text-xl font-bold text-slate-800">GlucoSync｜個人代謝與健康管理系統</h1>
+        <p class="mt-3 text-sm text-slate-500">此系統僅限授權帳號存取，請登入以檢視紀錄</p>
+        <button
+          class="mt-8 w-full rounded-xl bg-teal-700 py-3.5 text-base font-semibold text-white active:bg-teal-800 disabled:opacity-60"
+          :disabled="authBusy"
+          @click="handleSignIn"
+        >🔑 使用 Google 帳號登入</button>
+        <button class="mt-4 text-xs text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline" @click="openFirebaseSetup">
+          {{ firebaseConfigured ? '重新設定 Firebase' : 'Firebase 尚未設定？貼上設定' }}
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-if="!isAuthorized && showFirebaseSetup"
+      class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center"
+      @click.self="showFirebaseSetup = false"
+    >
+      <div class="w-full rounded-t-2xl bg-white p-5 sm:max-w-lg sm:rounded-2xl">
+        <h2 class="text-lg font-semibold text-slate-800">Firebase 設定</h2>
+        <p class="mt-1 text-xs text-slate-500">僅用於初始化登入，不會顯示個人紀錄。</p>
+        <textarea
+          v-model="settings.firebaseConfig"
+          rows="6"
+          spellcheck="false"
+          placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'
+          class="mt-4 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-xs"
+        />
+        <p v-if="settingsError" class="mt-3 rounded-lg bg-rose-50 p-2 text-sm text-rose-600">{{ settingsError }}</p>
+        <div class="mt-5 grid grid-cols-2 gap-3">
+          <button class="rounded-xl bg-slate-100 py-3 text-slate-700" @click="showFirebaseSetup = false">取消</button>
+          <button class="rounded-xl bg-teal-700 py-3 font-semibold text-white" @click="submitFirebaseSetup">儲存並重新載入</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="isAuthorized" class="min-h-screen pb-24 md:pb-8">
     <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
       <div class="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3">
         <div class="min-w-0 flex-1">
@@ -294,32 +389,23 @@ async function importData(e) {
           </p>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
-          <template v-if="!authUser">
-            <button
-              class="rounded-full bg-white/15 px-3 py-2 text-xs font-medium active:bg-white/25 disabled:opacity-60"
-              :disabled="authBusy"
-              @click="handleSignIn"
-            >🔑 Google 登入</button>
-          </template>
-          <template v-else>
-            <img
-              v-if="authUser.photoURL"
-              :src="authUser.photoURL"
-              alt=""
-              class="size-8 rounded-full object-cover ring-1 ring-white/40"
-              referrerpolicy="no-referrer"
-            />
-            <span
-              v-else
-              class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold"
-            >{{ userInitials }}</span>
-            <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
-            <button
-              class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
-              :disabled="authBusy"
-              @click="handleSignOut"
-            >登出</button>
-          </template>
+          <img
+            v-if="authUser.photoURL"
+            :src="authUser.photoURL"
+            alt=""
+            class="size-8 rounded-full object-cover ring-1 ring-white/40"
+            referrerpolicy="no-referrer"
+          />
+          <span
+            v-else
+            class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold"
+          >{{ userInitials }}</span>
+          <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
+          <button
+            class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
+            :disabled="authBusy"
+            @click="handleSignOut"
+          >登出</button>
           <button
             class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20"
             aria-label="設定"
@@ -376,7 +462,7 @@ async function importData(e) {
 
     <!-- Settings modal -->
     <div
-      v-if="showSettings"
+      v-if="isAuthorized && showSettings"
       class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center"
       @click.self="showSettings = false"
     >
@@ -519,6 +605,7 @@ async function importData(e) {
         </div>
         <p v-if="dataMsg" class="mt-2 text-sm" :class="dataMsgOk ? 'text-emerald-700' : 'text-rose-600'">{{ dataMsg }}</p>
       </div>
+    </div>
     </div>
   </div>
 </template>
