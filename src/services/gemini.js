@@ -278,6 +278,11 @@ export async function evaluateLabs({ apiKey, labs, recentDays }) {
 // ---------- Helpers ----------
 /** Aggregate a day's logged meals + tracker values. */
 export function summarizeDay(day) {
+  const exLogs = Array.isArray(day.exercise_logs) ? day.exercise_logs : []
+  const computedExMin = exLogs.length
+    ? exLogs.reduce((sum, item) => sum + (Number(item.duration_min) || 0), 0)
+    : day.exercise_min || 0
+
   const s = {
     date: day.date,
     kcal: 0,
@@ -288,7 +293,18 @@ export function summarizeDay(day) {
     fiber_g: 0,
     sodium_mg: 0,
     hydration_cc: day.hydration_cc || 0,
-    exercise_min: day.exercise_min || 0,
+    exercise_min: computedExMin,
+    exercise_logs: exLogs.map((e) => ({
+      type: e.type,
+      duration_min: e.duration_min,
+      note: e.note || '',
+    })),
+    drinks: (day.drinks || []).map((d) => ({
+      name: d.name,
+      volume_cc: d.volume_cc,
+      counts_as_water: Boolean(d.counts_as_water),
+      note: d.note || '',
+    })),
   }
   for (const m of day.meals || []) {
     const a = m.analysis
