@@ -312,7 +312,7 @@
 
     function emptyDay(date) {
       return {
-        date: date, hydration_cc: 0, exercise_min: 0,
+        date: date, hydration_cc: 0, exercise_min: 0, exercise_logs: [],
         meds: {
           morning: { eutomin: false, forxiga: false, glitos: false, roty: false },
           evening: { eutomin: false }
@@ -672,7 +672,7 @@
     /* =====================================================================
      * 4. COMPONENT: DailyTracker
      * ===================================================================== */
-    var DailyTracker = {
+     var DailyTracker = {
       props: { day: { type: Object, required: true } },
       emits: ['update', 'open-settings'],
       setup: function (props, ctx) {
@@ -681,19 +681,16 @@
           mutator(next);
           ctx.emit('update', next);
         }
+        function nowTime() { return new Date().toTimeString().slice(0, 5); }
 
         // hydration
-        // Targets are user-configurable (Settings): always read them reactively from `live`.
         var targets = computed(function () { return live.targets; });
-        var hydrationPct = computed(function () {
-          return Math.min(100, Math.round(((props.day.hydration_cc || 0) / (targets.value.hydrationMax || 1)) * 100));
-        });
+        var hydrationPct = computed(function () { return Math.min(100, Math.round(((props.day.hydration_cc || 0) / (targets.value.hydrationMax || 1)) * 100)); });
         var hydrationMinPct = computed(function () { return (targets.value.hydrationMin / (targets.value.hydrationMax || 1)) * 100; });
         var hydrationReached = computed(function () { return (props.day.hydration_cc || 0) >= targets.value.hydrationMin; });
         function addWater(cc) { commit(function (d) { d.hydration_cc = Math.max(0, (d.hydration_cc || 0) + cc); }); }
 
         // meds
-        // Medication list is user-editable (Settings); checked state is stored as day.meds[slot][med.id].
         function toggleMed(slot, id) {
           commit(function (d) {
             d.meds = d.meds || {};
@@ -705,17 +702,51 @@
         var medDone = computed(function () {
           var done = 0, total = 0;
           ['morning', 'evening'].forEach(function (slot) {
-            medsForSlot(slot).forEach(function (m) {
-              total++;
-              if (isMedTaken(slot, m.id)) done++;
-            });
+            medsForSlot(slot).forEach(function (m) { total++; if (isMedTaken(slot, m.id)) done++; });
           });
           return { done: done, total: total };
         });
 
-        // exercise
-        function addExercise(min) { commit(function (d) { d.exercise_min = (d.exercise_min || 0) + min; }); }
-        function resetExercise() { commit(function (d) { d.exercise_min = 0; }); }
+        // exercise (彈性化重構)
+        var EXERCISE_TYPES = ['餐後踏步', '戶外散步', '慢跑/路跑', '健身房跑步機', '重訓/肌力', '騎車'];
+        var exerciseForm = reactive({ type: '餐後踏步', duration: '', note: '' });
+
+        function syncExerciseTotal(d) {
+          d.exercise_logs = d.exercise_logs || [];
+          d.exercise_min = d.exercise_logs.reduce(function (sum, item) { return sum + (Number(item.duration_min) || 0); }, 0);
+        }
+
+        function addExerciseLog(quickMin) {
+          var d_min = Number(quickMin) || Number(exerciseForm.duration);
+          if (!d_min || d_min <= 0) return;
+          commit(function (d) {
+            d.exercise_logs = d.exercise_logs || [];
+            d.exercise_logs.push({
+              id: 'ex-' + Date.now(),
+              time: nowTime(),
+              type: exerciseForm.type,
+              duration_min: d_min,
+              note: exerciseForm.note.trim(),
+              source: 'manual'
+            });
+            syncExerciseTotal(d);
+          });
+          exerciseForm.duration = '';
+          exerciseForm.note = '';
+        }
+
+        function removeExerciseLog(id) {
+          commit(function (d) {
+            d.exercise_logs = (d.exercise_logs || []).filter(function (x) { return x.id !== id; });
+            syncExerciseTotal(d);
+          });
+        }
+
+        function clearExerciseLogs() {
+          if (!window.confirm('確定要清空當日所有運動紀錄？')) return;
+          commit(function (d) { d.exercise_logs = []; d.exercise_min = 0; });
+        }
+
         var exerciseReached = computed(function () { return (props.day.exercise_min || 0) >= targets.value.exerciseTarget; });
 
         // meal input
@@ -729,8 +760,7 @@
         var elapsedTimer = null;
         var showToast = inject('showToast', function () {});
         function startBusy() {
-          busy.value = true; elapsed.value = 0;
-          clearInterval(elapsedTimer);
+          busy.value = true; elapsed.value = 0; clearInterval(elapsedTimer);
           elapsedTimer = setInterval(function () { elapsed.value += 1; }, 1000);
         }
         function stopBusy() { busy.value = false; clearInterval(elapsedTimer); elapsedTimer = null; }
@@ -741,7 +771,7 @@
           if (i >= 0) selectedTags.value.splice(i, 1); else selectedTags.value.push(t);
         }
 
-        // ---- preset / tag manager (customizations persist through updateCustom) ----
+        // preset / tag manager
         var editMode = ref(false);
         var manageError = ref('');
         var newPreset = reactive({ category: '', label: '', description: '' });
@@ -753,55 +783,37 @@
         });
 
         function onPresetEdit(id, field, e) {
-          manageError.value = '';
-          var list = deepCopy(live.presets);
-          var p = list.find(function (x) { return x.id === id; });
-          if (!p) return;
+          manageError.value = ''; var list = deepCopy(live.presets);
+          var p = list.find(function (x) { return x.id === id; }); if (!p) return;
           var value = e.target.value.trim();
           if (field === 'label' && !value) { manageError.value = '按鈕名稱不可空白。'; e.target.value = p.label; return; }
           if (field === 'category' && !value) value = '自訂';
-          p[field] = value;
-          updateCustom('presets', list);
+          p[field] = value; updateCustom('presets', list);
         }
-        function deletePreset(id) {
-          manageError.value = '';
-          updateCustom('presets', live.presets.filter(function (p) { return p.id !== id; }));
-        }
+        function deletePreset(id) { manageError.value = ''; updateCustom('presets', live.presets.filter(function (p) { return p.id !== id; })); }
         function addPreset() {
-          manageError.value = '';
-          var label = newPreset.label.trim(), description = newPreset.description.trim();
+          manageError.value = ''; var label = newPreset.label.trim(), description = newPreset.description.trim();
           if (!label || !description) { manageError.value = '請填寫按鈕名稱與完整餐點描述。'; return; }
           var list = deepCopy(live.presets);
           list.push({ id: 'custom-' + Date.now(), category: newPreset.category.trim() || '自訂', label: label, description: description });
           updateCustom('presets', list);
           newPreset.category = ''; newPreset.label = ''; newPreset.description = '';
         }
-        function deleteTag(t) {
-          updateCustom('tags', live.tags.filter(function (x) { return x !== t; }));
-          selectedTags.value = selectedTags.value.filter(function (x) { return x !== t; });
-        }
+        function deleteTag(t) { updateCustom('tags', live.tags.filter(function (x) { return x !== t; })); selectedTags.value = selectedTags.value.filter(function (x) { return x !== t; }); }
         function addTag() {
-          manageError.value = '';
-          var t = newTag.value.trim();
-          if (!t) return;
+          manageError.value = ''; var t = newTag.value.trim(); if (!t) return;
           if (!/^\[.*\]$/.test(t)) t = '[' + t + ']';
           if (live.tags.indexOf(t) >= 0) { manageError.value = '此標籤已存在。'; return; }
-          updateCustom('tags', live.tags.concat([t]));
-          newTag.value = '';
+          updateCustom('tags', live.tags.concat([t])); newTag.value = '';
         }
         function resetMenu() {
           if (!window.confirm('確定要恢復預設菜單？\n自訂的快選按鈕與修飾標籤都會被移除。')) return;
-          resetCustom(['presets', 'tags']);
-          selectedTags.value = [];
-          manageError.value = '';
+          resetCustom(['presets', 'tags']); selectedTags.value = []; manageError.value = '';
         }
-        // Save the current textarea content as a new one-click preset.
         function saveAsPreset() {
-          error.value = '';
-          var text = mealText.value.trim();
+          error.value = ''; var text = mealText.value.trim();
           if (!text) { error.value = '請先在下方輸入餐點描述，再存為常吃快選。'; return; }
-          var label = window.prompt('快選按鈕名稱 (簡短)', text.slice(0, 8));
-          if (label === null) return;
+          var label = window.prompt('快選按鈕名稱 (簡短)', text.slice(0, 8)); if (label === null) return;
           if (!label.trim()) { error.value = '快選名稱不可空白。'; return; }
           var cats = presetCategories.value;
           var category = window.prompt('分類 (' + cats.join(' / ') + '，或輸入新分類)', cats.indexOf('外食') >= 0 ? '外食' : (cats[0] || '自訂'));
@@ -812,58 +824,60 @@
         }
 
         function onPhoto(e) {
-          var file = e.target.files && e.target.files[0];
-          if (!file) return;
+          var file = e.target.files && e.target.files[0]; if (!file) return;
           var reader = new FileReader();
           reader.onload = function () {
             var img = new Image();
             img.onload = function () {
-              var max = 1024;
-              var scale = Math.min(1, max / Math.max(img.width, img.height));
+              var max = 1024, scale = Math.min(1, max / Math.max(img.width, img.height));
               var canvas = document.createElement('canvas');
-              canvas.width = Math.round(img.width * scale);
-              canvas.height = Math.round(img.height * scale);
+              canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
               canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
               var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
               photo.value = { mimeType: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl };
             };
             img.src = reader.result;
           };
-          reader.readAsDataURL(file);
-          e.target.value = '';
+          reader.readAsDataURL(file); e.target.value = '';
         }
-
-        function nowTime() { return new Date().toTimeString().slice(0, 5); }
 
         async function submitMeal(withAI) {
           error.value = '';
-          if (!mealText.value.trim() && !photo.value) {
-            error.value = '請輸入餐點內容、選擇預設或上傳照片。';
-            return;
-          }
+          if (!mealText.value.trim() && !photo.value) { error.value = '請輸入餐點內容、選擇預設或上傳照片。'; return; }
           var id = String(Date.now());
           var entry = { id: id, time: nowTime(), text: mealText.value.trim(), tags: selectedTags.value.slice(), analysis: null };
+          
           if (withAI) {
             var apiKey = getGeminiKey();
             if (!apiKey) { error.value = '尚未設定 Gemini API Key。'; ctx.emit('open-settings'); return; }
             startBusy();
             try {
-              var dayCtx = summarizeDay(props.day);
-              delete dayCtx.date;
-              entry.analysis = await analyzeMeal({
-                apiKey: apiKey, text: entry.text, tags: entry.tags,
-                image: photo.value ? { mimeType: photo.value.mimeType, data: photo.value.data } : null,
-                dayContext: dayCtx
-              });
+              var dayCtx = summarizeDay(props.day); delete dayCtx.date;
+              entry.analysis = await analyzeMeal({ apiKey: apiKey, text: entry.text, tags: entry.tags, image: photo.value ? { mimeType: photo.value.mimeType, data: photo.value.data } : null, dayContext: dayCtx });
             } catch (err) {
-              error.value = err.message || String(err);
-              showToast(error.value);
-              stopBusy();
-              return;
+              error.value = err.message || String(err); showToast(error.value); stopBusy(); return;
             }
             stopBusy();
           }
-          commit(function (d) { d.meals.push(entry); d.ai_summary = null; });
+
+          commit(function (d) {
+            d.meals.push(entry);
+            d.ai_summary = null;
+            
+            // 餐點標籤運動自動連動扣抵
+            if (entry.tags.indexOf('[餐後踏步 20分]') >= 0) {
+              d.exercise_logs = d.exercise_logs || [];
+              d.exercise_logs.push({
+                id: 'ex-meal-' + Date.now(),
+                time: entry.time,
+                type: '餐後踏步',
+                duration_min: 20,
+                note: '來自餐點標籤連動',
+                source: 'meal_tag'
+              });
+              syncExerciseTotal(d);
+            }
+          });
           latestId.value = withAI ? id : null;
           mealText.value = ''; selectedTags.value = []; photo.value = null;
         }
@@ -875,55 +889,35 @@
 
         var mealToShow = computed(function () {
           var meals = props.day.meals || [];
-          var found = meals.find(function (m) { return m.id === latestId.value; });
-          if (found) return found;
-          var rev = meals.slice().reverse();
-          return rev.find(function (m) { return m.analysis; }) || null;
+          var found = meals.find(function (m) { return m.id === latestId.value; }); if (found) return found;
+          var rev = meals.slice().reverse(); return rev.find(function (m) { return m.analysis; }) || null;
         });
 
-        // daily AI summary
-        var summaryBusy = ref(false);
-        var summaryError = ref('');
+        var summaryBusy = ref(false); var summaryError = ref('');
         async function runDaySummary() {
-          summaryError.value = '';
-          var apiKey = getGeminiKey();
+          summaryError.value = ''; var apiKey = getGeminiKey();
           if (!apiKey) { summaryError.value = '尚未設定 Gemini API Key。'; ctx.emit('open-settings'); return; }
           if (!(props.day.meals || []).length) { summaryError.value = '請先記錄至少一餐。'; return; }
           summaryBusy.value = true;
           try {
-            var result = await summarizeDayAI({
-              apiKey: apiKey,
-              totals: summarizeDay(props.day),
-              meals: props.day.meals.map(function (m) {
-                return { time: m.time, name: (m.analysis && m.analysis.meal_name) || m.text, tags: m.tags, analyzed: !!m.analysis };
-              }),
-              meds: props.day.meds
-            });
+            var result = await summarizeDayAI({ apiKey: apiKey, totals: summarizeDay(props.day), meals: props.day.meals.map(function (m) { return { time: m.time, name: (m.analysis && m.analysis.meal_name) || m.text, tags: m.tags, analyzed: !!m.analysis }; }), meds: props.day.meds });
             commit(function (d) { d.ai_summary = result; });
-          } catch (err) {
-            summaryError.value = err.message || String(err);
-            showToast(summaryError.value);
-          } finally {
-            summaryBusy.value = false;
-          }
+          } catch (err) { summaryError.value = err.message || String(err); showToast(summaryError.value); } finally { summaryBusy.value = false; }
         }
 
         var totals = computed(function () { return summarizeDay(props.day); });
-        var presetGroups = computed(function () {
-          var g = {};
-          live.presets.forEach(function (p) { (g[p.category] = g[p.category] || []).push(p); });
-          return g;
-        });
+        var presetGroups = computed(function () { var g = {}; live.presets.forEach(function (p) { (g[p.category] = g[p.category] || []).push(p); }); return g; });
 
         return {
           TARGETS: targets, live: live, medsForSlot: medsForSlot, medLabel: medLabel, isMedTaken: isMedTaken, ALERTS: ALERTS,
           editMode: editMode, manageError: manageError, newPreset: newPreset, newTag: newTag, presetCategories: presetCategories,
-          onPresetEdit: onPresetEdit, deletePreset: deletePreset, addPreset: addPreset, deleteTag: deleteTag, addTag: addTag,
-          resetMenu: resetMenu, saveAsPreset: saveAsPreset,
+          onPresetEdit: onPresetEdit, deletePreset: deletePreset, addPreset: addPreset, deleteTag: deleteTag, addTag: addTag, resetMenu: resetMenu, saveAsPreset: saveAsPreset,
           LEVEL_STYLE: LEVEL_STYLE, DOT_STYLE: DOT_STYLE, LEVEL_TEXT: LEVEL_TEXT,
           hydrationPct: hydrationPct, hydrationMinPct: hydrationMinPct, hydrationReached: hydrationReached, addWater: addWater,
           toggleMed: toggleMed, medDone: medDone,
-          addExercise: addExercise, resetExercise: resetExercise, exerciseReached: exerciseReached,
+          
+          EXERCISE_TYPES: EXERCISE_TYPES, exerciseForm: exerciseForm, addExerciseLog: addExerciseLog, removeExerciseLog: removeExerciseLog, clearExerciseLogs: clearExerciseLogs, exerciseReached: exerciseReached,
+          
           mealText: mealText, selectedTags: selectedTags, photo: photo, busy: busy, elapsed: elapsed, error: error,
           applyPreset: applyPreset, toggleTag: toggleTag, onPhoto: onPhoto, submitMeal: submitMeal, removeMeal: removeMeal,
           mealToShow: mealToShow, totals: totals, presetGroups: presetGroups,
@@ -972,15 +966,43 @@
   <!-- Exercise -->
   <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
     <div class="flex items-baseline justify-between">
-      <h2 class="font-semibold text-slate-800">🚶 餐後踏步</h2>
+      <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
       <span class="text-sm" :class="exerciseReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
         {{ day.exercise_min || 0 }} 分鐘 (目標 {{ TARGETS.exerciseTarget }} 分)
       </span>
     </div>
-    <div class="mt-3 grid grid-cols-3 gap-2">
-      <button class="rounded-xl bg-teal-600 py-3 font-medium text-white active:bg-teal-700" @click="addExercise(15)">+15 分</button>
-      <button class="rounded-xl bg-teal-600 py-3 font-medium text-white active:bg-teal-700" @click="addExercise(20)">+20 分</button>
-      <button class="rounded-xl bg-slate-100 py-3 text-slate-600 active:bg-slate-200" @click="resetExercise">重設</button>
+    
+    <div class="mt-3 space-y-3">
+      <div class="flex flex-wrap gap-2">
+        <button v-for="t in EXERCISE_TYPES" :key="t" class="rounded-md px-2.5 py-1.5 text-sm"
+          :class="exerciseForm.type === t ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+          @click="exerciseForm.type = t">{{ t }}</button>
+      </div>
+
+      <div class="flex flex-wrap gap-2">
+        <input v-model="exerciseForm.duration" type="number" placeholder="分鐘" class="w-20 rounded-lg border border-slate-300 p-2 text-base text-slate-800" />
+        <button class="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 active:bg-slate-200" @click="addExerciseLog(15)">+15分</button>
+        <button class="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 active:bg-slate-200" @click="addExerciseLog(20)">+20分</button>
+        <input v-model="exerciseForm.note" type="text" placeholder="選填備註 (如坡度/配速)" class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2 text-base text-slate-800" />
+      </div>
+      <button class="w-full rounded-xl bg-teal-600 py-3 font-medium text-white active:bg-teal-700" @click="addExerciseLog()">➕ 新增紀錄</button>
+    </div>
+
+    <div v-if="day.exercise_logs && day.exercise_logs.length" class="mt-4 border-t border-slate-100 pt-3">
+      <ul class="divide-y divide-slate-100">
+        <li v-for="log in day.exercise_logs" :key="log.id" class="flex items-start gap-2 py-2">
+          <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium text-slate-800">
+              {{ log.type }} <span class="text-teal-600">{{ log.duration_min }} 分鐘</span>
+              <span v-if="log.source === 'meal_tag'" class="ml-2 inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">餐點連動</span>
+            </p>
+            <p v-if="log.note" class="mt-0.5 text-xs text-slate-500">{{ log.note }}</p>
+          </div>
+          <button class="px-2 text-slate-300 active:text-rose-500" @click="removeExerciseLog(log.id)">✕</button>
+        </li>
+      </ul>
+      <button class="mt-2 text-xs text-rose-500 active:text-rose-600" @click="clearExerciseLogs">清空當日運動</button>
     </div>
   </section>
 
@@ -991,32 +1013,25 @@
         <h2 class="font-semibold text-slate-800">🍱 記錄餐點</h2>
         <p class="mt-0.5 text-xs text-slate-500">進食順序：蔬菜 → 蛋白質 → 澱粉 (半份)</p>
       </div>
-      <button class="shrink-0 rounded-lg px-3 py-2 text-sm"
-        :class="editMode ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 active:bg-slate-200'"
-        @click="editMode = !editMode">{{ editMode ? '✓ 完成編輯' : '⚙️ 編輯快選' }}</button>
+      <button class="shrink-0 rounded-lg px-3 py-2 text-sm" :class="editMode ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 active:bg-slate-200'" @click="editMode = !editMode">{{ editMode ? '✓ 完成編輯' : '⚙️ 編輯快選' }}</button>
     </div>
 
-    <!-- Normal mode: one-click presets + modifier tags -->
     <template v-if="!editMode">
       <div class="mt-3 space-y-2">
         <div v-for="(list, cat) in presetGroups" :key="cat">
           <p class="mb-1 text-xs font-medium text-slate-400">{{ cat }}</p>
           <div class="flex flex-wrap gap-2">
-            <button v-for="p in list" :key="p.id" class="rounded-full border px-3 py-1.5 text-sm active:bg-teal-100"
-              :class="mealText === p.description ? 'border-teal-600 bg-teal-50 text-teal-800' : 'border-slate-300 text-slate-700'"
-              @click="applyPreset(p)">{{ p.label }}</button>
+            <button v-for="p in list" :key="p.id" class="rounded-full border px-3 py-1.5 text-sm active:bg-teal-100" :class="mealText === p.description ? 'border-teal-600 bg-teal-50 text-teal-800' : 'border-slate-300 text-slate-700'" @click="applyPreset(p)">{{ p.label }}</button>
           </div>
         </div>
         <p v-if="!live.presets.length" class="text-sm text-slate-400">尚無快選按鈕，請按「⚙️ 編輯快選」新增，或直接輸入餐點後按「⭐ 存為常吃快選」。</p>
       </div>
 
       <div class="mt-3 flex flex-wrap gap-2">
-        <button v-for="t in live.tags" :key="t" class="rounded-md px-2.5 py-1.5 text-sm"
-          :class="selectedTags.includes(t) ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'" @click="toggleTag(t)">{{ t }}</button>
+        <button v-for="t in live.tags" :key="t" class="rounded-md px-2.5 py-1.5 text-sm" :class="selectedTags.includes(t) ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'" @click="toggleTag(t)">{{ t }}</button>
       </div>
     </template>
 
-    <!-- Edit mode: manage presets & modifier tags -->
     <div v-else class="mt-3 space-y-4 rounded-xl border border-teal-200 bg-teal-50/40 p-3">
       <datalist id="preset-categories"><option v-for="c in presetCategories" :key="c" :value="c"></option></datalist>
       <p class="text-xs text-slate-500">修改後即自動儲存。分類可輸入任何名稱 (例如：平日、外食、在家、假日或自訂)。</p>
@@ -1033,7 +1048,6 @@
         </div>
       </div>
 
-      <!-- Add new preset -->
       <div class="space-y-1.5 rounded-lg border border-dashed border-teal-400 bg-white p-2.5">
         <p class="text-sm font-medium text-slate-700">➕ 新增快選按鈕</p>
         <div class="flex gap-2">
@@ -1044,7 +1058,6 @@
         <button class="w-full rounded-lg bg-teal-600 py-2.5 font-medium text-white active:bg-teal-700" @click="addPreset">新增快選</button>
       </div>
 
-      <!-- Modifier tags -->
       <div class="space-y-2">
         <p class="text-xs font-semibold text-teal-800">修飾標籤</p>
         <div class="flex flex-wrap gap-2">
@@ -1061,12 +1074,10 @@
       </div>
 
       <p v-if="manageError" class="rounded-lg bg-rose-50 p-2 text-sm text-rose-700">{{ manageError }}</p>
-
       <button class="w-full rounded-lg bg-white py-2.5 text-sm text-rose-600 ring-1 ring-rose-200 active:bg-rose-50" @click="resetMenu">↩︎ 恢復預設菜單</button>
     </div>
 
-    <textarea v-model="mealText" rows="3" placeholder="描述餐點，例如：雞腿便當，飯吃一半…"
-      class="mt-3 w-full rounded-xl border border-slate-300 p-3 text-base focus:border-teal-500 focus:outline-none"></textarea>
+    <textarea v-model="mealText" rows="3" placeholder="描述餐點，例如：雞腿便當，飯吃一半…" class="mt-3 w-full rounded-xl border border-slate-300 p-3 text-base focus:border-teal-500 focus:outline-none"></textarea>
 
     <div class="mt-2 flex flex-wrap items-center gap-2">
       <button class="rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200 active:bg-amber-100" @click="saveAsPreset">⭐ 存為常吃快選</button>
@@ -1094,17 +1105,10 @@
   <section v-if="mealToShow && mealToShow.analysis" class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
     <h2 class="font-semibold text-slate-800">🚦 {{ mealToShow.analysis.meal_name }}</h2>
     <p class="mt-1 text-xs text-slate-500">
-      約 {{ Math.round(mealToShow.analysis.estimated_calories_kcal) }} kcal ·
-      蛋白質 {{ mealToShow.analysis.macronutrients.protein_g }}g ·
-      碳水 {{ mealToShow.analysis.macronutrients.carbs_g }}g ·
-      脂肪 {{ mealToShow.analysis.macronutrients.fat_g }}g
-      (飽和 {{ mealToShow.analysis.macronutrients.saturated_fat_g }}g) ·
-      纖維 {{ mealToShow.analysis.macronutrients.dietary_fiber_g }}g ·
-      鈉 {{ mealToShow.analysis.macronutrients.sodium_mg }}mg
+      約 {{ Math.round(mealToShow.analysis.estimated_calories_kcal) }} kcal · 蛋白質 {{ mealToShow.analysis.macronutrients.protein_g }}g · 碳水 {{ mealToShow.analysis.macronutrients.carbs_g }}g · 脂肪 {{ mealToShow.analysis.macronutrients.fat_g }}g (飽和 {{ mealToShow.analysis.macronutrients.saturated_fat_g }}g) · 纖維 {{ mealToShow.analysis.macronutrients.dietary_fiber_g }}g · 鈉 {{ mealToShow.analysis.macronutrients.sodium_mg }}mg
     </p>
     <div class="mt-3 grid gap-2 sm:grid-cols-2">
-      <div v-for="a in ALERTS" :key="a.key" class="rounded-xl border p-3"
-        :class="LEVEL_STYLE[mealToShow.analysis[a.key] && mealToShow.analysis[a.key].level] || 'bg-slate-50 border-slate-200'">
+      <div v-for="a in ALERTS" :key="a.key" class="rounded-xl border p-3" :class="LEVEL_STYLE[mealToShow.analysis[a.key] && mealToShow.analysis[a.key].level] || 'bg-slate-50 border-slate-200'">
         <div class="flex items-center gap-2 text-sm font-semibold">
           <span class="size-3 rounded-full" :class="DOT_STYLE[mealToShow.analysis[a.key] && mealToShow.analysis[a.key].level]"></span>
           {{ a.title }}
@@ -1148,8 +1152,7 @@
     <div v-if="day.ai_summary" class="mt-3 space-y-3 text-sm text-slate-700">
       <p class="rounded-xl bg-indigo-50 p-3 text-indigo-900">{{ day.ai_summary.overall_assessment }}</p>
       <div class="grid gap-2 sm:grid-cols-2">
-        <div v-for="a in ALERTS" :key="a.key" class="rounded-xl border p-3"
-          :class="LEVEL_STYLE[day.ai_summary[a.key] && day.ai_summary[a.key].level] || 'bg-slate-50 border-slate-200'">
+        <div v-for="a in ALERTS" :key="a.key" class="rounded-xl border p-3" :class="LEVEL_STYLE[day.ai_summary[a.key] && day.ai_summary[a.key].level] || 'bg-slate-50 border-slate-200'">
           <div class="flex items-center gap-2 text-sm font-semibold">
             <span class="size-3 rounded-full" :class="DOT_STYLE[day.ai_summary[a.key] && day.ai_summary[a.key].level]"></span>{{ a.title }}
           </div>
