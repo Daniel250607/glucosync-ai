@@ -12,6 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 
   <style>
     html, body { -webkit-tap-highlight-color: transparent; }
@@ -230,18 +231,62 @@
       }
     }
 
+    var ALLOWED_EMAIL = 'daniel.chang.hy@gmail.com';
+    function normalizeEmail(email) { return String(email || '').trim().toLowerCase(); }
+    function isAuthorizedEmail(email) { return normalizeEmail(email) === ALLOWED_EMAIL; }
+
     var db = null;
+    var auth = null;
     try {
       var fbCfg = parseFirebaseConfig(loadSettings().firebaseConfig);
       if (fbCfg && fbCfg.projectId && window.firebase) {
         var fbApp = firebase.apps && firebase.apps.length ? firebase.app() : firebase.initializeApp(fbCfg);
         db = fbApp.firestore();
+        if (firebase.auth) auth = fbApp.auth();
       }
     } catch (err) {
       console.warn('[GlucoSync] Firebase init failed, using localStorage.', err);
       db = null;
+      auth = null;
     }
     var BACKEND = db ? 'firestore' : 'localStorage';
+
+    function isFirebaseConfigured() { return !!(db && auth); }
+    function isCloudReady() {
+      return !!(db && auth && auth.currentUser && isAuthorizedEmail(auth.currentUser.email));
+    }
+    function formatAuthError(err) {
+      var code = err && err.code;
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return '已取消 Google 登入。';
+      if (code === 'auth/popup-blocked') return '瀏覽器封鎖了登入視窗，請允許彈出視窗後再試。';
+      if (code === 'auth/network-request-failed') return '網路連線失敗，請檢查網路後再試。';
+      if (code === 'auth/unauthorized-domain') return '此網域尚未加入 Firebase 授權網域，請至 Firebase Console 設定。';
+      return (err && err.message) || String(err);
+    }
+    async function signInWithGoogle() {
+      if (!auth) throw new Error('尚未設定 Firebase，請先在右上角設定貼上 Firebase 設定。');
+      var result = await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+      var user = result.user;
+      if (!isAuthorizedEmail(user && user.email)) {
+        await auth.signOut();
+        throw new Error('此 Google 帳號未獲授權，已登出。');
+      }
+      return user;
+    }
+    async function signOutUser() {
+      if (!auth) return;
+      await auth.signOut();
+    }
+    function onAuthStateChanged(callback) {
+      if (!auth) { callback(null); return function () {}; }
+      return auth.onAuthStateChanged(function (user) {
+        if (user && !isAuthorizedEmail(user.email)) {
+          auth.signOut().then(function () { callback(null); }).catch(function () { callback(null); });
+          return;
+        }
+        callback(user);
+      });
+    }
 
     function todayKey(d) {
       d = d || new Date();
@@ -263,7 +308,7 @@
 
     async function loadDays() {
       var local = readJSON(DAYS_KEY, {});
-      if (!db) return local;
+      if (!isCloudReady()) return local;
       try {
         var snap = await db.collection('days').get();
         var remote = {};
@@ -281,7 +326,7 @@
       var all = readJSON(DAYS_KEY, {});
       all[day.date] = day;
       writeJSON(DAYS_KEY, all);
-      if (!db) return;
+      if (!isCloudReady()) return;
       try { await db.collection('days').doc(day.date).set(day); }
       catch (err) { console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err); }
     }
@@ -290,7 +335,7 @@
     // mirrored to Firestore doc config/custom when configured. The newer `updated_at` wins.
     async function loadCustomConfig() {
       var local = readJSON(CONFIG_KEY, {});
-      if (!db) return local;
+      if (!isCloudReady()) return local;
       try {
         var snap = await db.collection('config').doc('custom').get();
         if (snap.exists) {
@@ -306,7 +351,7 @@
     async function saveCustomConfig(cfg) {
       var payload = Object.assign({}, JSON.parse(JSON.stringify(cfg || {})), { updated_at: Date.now() });
       writeJSON(CONFIG_KEY, payload);
-      if (!db) return;
+      if (!isCloudReady()) return;
       try { await db.collection('config').doc('custom').set(payload); }
       catch (err) { console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err); }
     }
@@ -314,7 +359,7 @@
     async function loadLabs() {
       var local = readJSON(LABS_KEY, {});
       var merged = local;
-      if (db) {
+      if (isCloudReady()) {
         try {
           var snap = await db.collection('labs').get();
           var remote = {};
@@ -331,7 +376,7 @@
       var all = readJSON(LABS_KEY, {});
       all[lab.date] = lab;
       writeJSON(LABS_KEY, all);
-      if (!db) return;
+      if (!isCloudReady()) return;
       try { await db.collection('labs').doc(lab.date).set(lab); }
       catch (err) { console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err); }
     }
@@ -1398,17 +1443,35 @@
         var labs = ref([]);
         var loaded = ref(false);
         var today = todayKey();
+        var authUser = ref(null);
+        var authBusy = ref(false);
 
         var todayData = computed(function () { return days.value[today] || emptyDay(today); });
+        var synced = computed(function () { return !!(authUser.value && isCloudReady()); });
+        var syncBadge = computed(function () { return synced.value ? '☁️ 已同步' : '💾 本機快取'; });
+        var userInitials = computed(function () {
+          var u = authUser.value;
+          if (!u) return '?';
+          var src = String(u.displayName || u.email || '?').trim();
+          return src.charAt(0).toUpperCase();
+        });
 
         // Persist every user edit of presets / tags / targets / medications (localStorage + Firestore).
         onCustomConfigChange(function () { saveCustomConfig(getCustomConfig()); });
 
-        onMounted(async function () {
+        async function hydrateFromStorage() {
           applyCustomConfig(await loadCustomConfig());
           days.value = await loadDays();
           labs.value = await loadLabs();
+        }
+
+        onMounted(async function () {
+          await hydrateFromStorage();
           loaded.value = true;
+          onAuthStateChanged(async function (user) {
+            authUser.value = user;
+            if (user) await hydrateFromStorage();
+          });
         });
 
         async function updateDay(day) {
@@ -1438,6 +1501,21 @@
         }
         function dismissToast() { toast.value = ''; clearTimeout(toastTimer); }
         provide('showToast', showToast);
+
+        async function handleSignIn() {
+          if (authBusy.value) return;
+          authBusy.value = true;
+          try { await signInWithGoogle(); }
+          catch (err) { showToast(formatAuthError(err)); }
+          finally { authBusy.value = false; }
+        }
+        async function handleSignOut() {
+          if (authBusy.value) return;
+          authBusy.value = true;
+          try { await signOutUser(); authUser.value = null; }
+          catch (err) { showToast(formatAuthError(err)); }
+          finally { authBusy.value = false; }
+        }
 
         // Draft copy of targets + medications: only applied when the user presses 儲存.
         var draft = reactive({ targets: Object.assign({}, TARGETS), medications: [] });
@@ -1559,6 +1637,8 @@
 
         return {
           tabs: tabs, tab: tab, days: days, labs: labs, loaded: loaded, today: today, todayData: todayData, backend: BACKEND,
+          authUser: authUser, authBusy: authBusy, synced: synced, syncBadge: syncBadge, userInitials: userInitials,
+          handleSignIn: handleSignIn, handleSignOut: handleSignOut,
           updateDay: updateDay, addLab: addLab,
           showSettings: showSettings, settings: settings, settingsError: settingsError, openSettings: openSettings, submitSettings: submitSettings,
           exportData: exportData, importData: importData, dataMsg: dataMsg, dataMsgOk: dataMsgOk,
@@ -1577,12 +1657,30 @@
     </div>
   </div>
   <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
-    <div class="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3">
+    <div class="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3">
       <div class="min-w-0 flex-1">
         <h1 class="truncate text-base font-bold sm:text-lg">GlucoSync｜AI 控糖降脂健康儀表板</h1>
-        <p class="text-xs text-teal-100">{{ today }} · 儲存：{{ backend === 'firestore' ? 'Firebase' : '本機 (localStorage)' }}</p>
+        <p class="text-xs text-teal-100">
+          {{ today }} ·
+          <span class="ml-0.5 rounded-full px-1.5 py-0.5 text-[10px] sm:text-xs"
+            :class="synced ? 'bg-emerald-400/25 text-emerald-50' : 'bg-white/10 text-teal-50'">{{ syncBadge }}</span>
+        </p>
       </div>
-      <button class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20" aria-label="設定" @click="openSettings">⚙️</button>
+      <div class="flex shrink-0 items-center gap-1.5">
+        <template v-if="!authUser">
+          <button class="rounded-full bg-white/15 px-3 py-2 text-xs font-medium active:bg-white/25 disabled:opacity-60"
+            :disabled="authBusy" @click="handleSignIn">🔑 Google 登入</button>
+        </template>
+        <template v-else>
+          <img v-if="authUser.photoURL" :src="authUser.photoURL" alt=""
+            class="size-8 rounded-full object-cover ring-1 ring-white/40" referrerpolicy="no-referrer" />
+          <span v-else class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold">{{ userInitials }}</span>
+          <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
+          <button class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
+            :disabled="authBusy" @click="handleSignOut">登出</button>
+        </template>
+        <button class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20" aria-label="設定" @click="openSettings">⚙️</button>
+      </div>
     </div>
     <nav class="mx-auto hidden max-w-4xl gap-1 px-4 md:flex">
       <button v-for="t in tabs" :key="t.id" class="rounded-t-lg px-5 py-2 text-sm font-medium"
