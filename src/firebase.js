@@ -17,6 +17,7 @@ const LABS_KEY = 'glucosync.labs'
 const CONFIG_KEY = 'glucosync.customConfig'
 
 export const ALLOWED_EMAIL = 'daniel.chang.hy@gmail.com'
+export const ACCESS_DENIED_MESSAGE = '⛔ 存取被拒：此帳號未獲授權'
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -109,6 +110,8 @@ export function isCloudReady() {
 
 export function formatAuthError(err) {
   const code = err && err.code
+  const message = (err && err.message) || String(err)
+  if (message && message.indexOf('存取被拒') >= 0) return ACCESS_DENIED_MESSAGE
   if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
     return '已取消 Google 登入。'
   }
@@ -121,16 +124,16 @@ export function formatAuthError(err) {
   if (code === 'auth/unauthorized-domain') {
     return '此網域尚未加入 Firebase 授權網域，請至 Firebase Console 設定。'
   }
-  return (err && err.message) || String(err)
+  return message
 }
 
 export async function signInWithGoogle() {
-  if (!auth) throw new Error('尚未設定 Firebase，請先在右上角設定貼上 Firebase 設定。')
+  if (!auth) throw new Error('尚未設定 Firebase，請先貼上 Firebase 設定後再登入。')
   const result = await signInWithPopup(auth, new GoogleAuthProvider())
   const user = result.user
   if (!isAuthorizedEmail(user && user.email)) {
     await signOut(auth)
-    throw new Error('此 Google 帳號未獲授權，已登出。')
+    throw new Error(ACCESS_DENIED_MESSAGE)
   }
   return user
 }
@@ -140,18 +143,19 @@ export async function signOutUser() {
   await signOut(auth)
 }
 
+/** Fires after Firebase restores the persisted session (or immediately if Auth is not configured). */
 export function onAuthStateChanged(callback) {
   if (!auth) {
-    callback(null)
+    callback(null, { ready: true, denied: false })
     return () => {}
   }
   return firebaseOnAuthStateChanged(auth, async (user) => {
     if (user && !isAuthorizedEmail(user.email)) {
       await signOut(auth)
-      callback(null)
+      callback(null, { ready: true, denied: true })
       return
     }
-    callback(user)
+    callback(user || null, { ready: true, denied: false })
   })
 }
 

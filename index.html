@@ -232,6 +232,7 @@
     }
 
     var ALLOWED_EMAIL = 'daniel.chang.hy@gmail.com';
+    var ACCESS_DENIED_MESSAGE = '⛔ 存取被拒：此帳號未獲授權';
     function normalizeEmail(email) { return String(email || '').trim().toLowerCase(); }
     function isAuthorizedEmail(email) { return normalizeEmail(email) === ALLOWED_EMAIL; }
 
@@ -257,19 +258,21 @@
     }
     function formatAuthError(err) {
       var code = err && err.code;
+      var message = (err && err.message) || String(err);
+      if (message && message.indexOf('存取被拒') >= 0) return ACCESS_DENIED_MESSAGE;
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return '已取消 Google 登入。';
       if (code === 'auth/popup-blocked') return '瀏覽器封鎖了登入視窗，請允許彈出視窗後再試。';
       if (code === 'auth/network-request-failed') return '網路連線失敗，請檢查網路後再試。';
       if (code === 'auth/unauthorized-domain') return '此網域尚未加入 Firebase 授權網域，請至 Firebase Console 設定。';
-      return (err && err.message) || String(err);
+      return message;
     }
     async function signInWithGoogle() {
-      if (!auth) throw new Error('尚未設定 Firebase，請先在右上角設定貼上 Firebase 設定。');
+      if (!auth) throw new Error('尚未設定 Firebase，請先貼上 Firebase 設定後再登入。');
       var result = await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
       var user = result.user;
       if (!isAuthorizedEmail(user && user.email)) {
         await auth.signOut();
-        throw new Error('此 Google 帳號未獲授權，已登出。');
+        throw new Error(ACCESS_DENIED_MESSAGE);
       }
       return user;
     }
@@ -278,13 +281,13 @@
       await auth.signOut();
     }
     function onAuthStateChanged(callback) {
-      if (!auth) { callback(null); return function () {}; }
+      if (!auth) { callback(null, { ready: true, denied: false }); return function () {}; }
       return auth.onAuthStateChanged(function (user) {
         if (user && !isAuthorizedEmail(user.email)) {
-          auth.signOut().then(function () { callback(null); }).catch(function () { callback(null); });
+          auth.signOut().then(function () { callback(null, { ready: true, denied: true }); }).catch(function () { callback(null, { ready: true, denied: true }); });
           return;
         }
-        callback(user);
+        callback(user || null, { ready: true, denied: false });
       });
     }
 
@@ -1445,9 +1448,13 @@
         var today = todayKey();
         var authUser = ref(null);
         var authBusy = ref(false);
+        var authReady = ref(false);
+        var showFirebaseSetup = ref(false);
+        var firebaseConfigured = isFirebaseConfigured();
 
+        var isAuthorized = computed(function () { return !!(authUser.value && isAuthorizedEmail(authUser.value.email)); });
         var todayData = computed(function () { return days.value[today] || emptyDay(today); });
-        var synced = computed(function () { return !!(authUser.value && isCloudReady()); });
+        var synced = computed(function () { return !!(isAuthorized.value && isCloudReady()); });
         var syncBadge = computed(function () { return synced.value ? '☁️ 已同步' : '💾 本機快取'; });
         var userInitials = computed(function () {
           var u = authUser.value;
@@ -1457,7 +1464,7 @@
         });
 
         // Persist every user edit of presets / tags / targets / medications (localStorage + Firestore).
-        onCustomConfigChange(function () { saveCustomConfig(getCustomConfig()); });
+        onCustomConfigChange(function () { if (isAuthorized.value) saveCustomConfig(getCustomConfig()); });
 
         async function hydrateFromStorage() {
           applyCustomConfig(await loadCustomConfig());
@@ -1465,12 +1472,26 @@
           labs.value = await loadLabs();
         }
 
-        onMounted(async function () {
-          await hydrateFromStorage();
-          loaded.value = true;
-          onAuthStateChanged(async function (user) {
-            authUser.value = user;
-            if (user) await hydrateFromStorage();
+        function lockApp() {
+          authUser.value = null;
+          days.value = {};
+          labs.value = [];
+          loaded.value = false;
+          showSettings.value = false;
+          applyCustomConfig({});
+        }
+
+        onMounted(function () {
+          onAuthStateChanged(async function (user, meta) {
+            authReady.value = true;
+            if (meta && meta.denied) showToast('⛔ 存取被拒：此帳號未獲授權');
+            if (user && isAuthorizedEmail(user.email)) {
+              authUser.value = user;
+              await hydrateFromStorage();
+              loaded.value = true;
+              return;
+            }
+            lockApp();
           });
         });
 
@@ -1512,9 +1533,31 @@
         async function handleSignOut() {
           if (authBusy.value) return;
           authBusy.value = true;
-          try { await signOutUser(); authUser.value = null; }
+          try { await signOutUser(); lockApp(); }
           catch (err) { showToast(formatAuthError(err)); }
           finally { authBusy.value = false; }
+        }
+        function openFirebaseSetup() {
+          var s = loadSettings();
+          settings.firebaseConfig = s.firebaseConfig || '';
+          settingsError.value = '';
+          showFirebaseSetup.value = true;
+        }
+        function submitFirebaseSetup() {
+          settingsError.value = '';
+          var text = settings.firebaseConfig.trim();
+          if (text) {
+            var cfg = parseFirebaseConfig(text);
+            if (!cfg || !cfg.projectId) { settingsError.value = 'Firebase 設定格式錯誤，需包含 projectId。'; return; }
+          }
+          var prev = loadSettings();
+          saveSettings({
+            geminiApiKey: prev.geminiApiKey || '',
+            firebaseConfig: text,
+            geminiModel: prev.geminiModel || DEFAULT_GEMINI_MODEL
+          });
+          showFirebaseSetup.value = false;
+          location.reload();
         }
 
         // Draft copy of targets + medications: only applied when the user presses 儲存.
@@ -1637,8 +1680,10 @@
 
         return {
           tabs: tabs, tab: tab, days: days, labs: labs, loaded: loaded, today: today, todayData: todayData, backend: BACKEND,
-          authUser: authUser, authBusy: authBusy, synced: synced, syncBadge: syncBadge, userInitials: userInitials,
+          authUser: authUser, authBusy: authBusy, authReady: authReady, isAuthorized: isAuthorized, firebaseConfigured: firebaseConfigured,
+          synced: synced, syncBadge: syncBadge, userInitials: userInitials,
           handleSignIn: handleSignIn, handleSignOut: handleSignOut,
+          showFirebaseSetup: showFirebaseSetup, openFirebaseSetup: openFirebaseSetup, submitFirebaseSetup: submitFirebaseSetup,
           updateDay: updateDay, addLab: addLab,
           showSettings: showSettings, settings: settings, settingsError: settingsError, openSettings: openSettings, submitSettings: submitSettings,
           exportData: exportData, importData: importData, dataMsg: dataMsg, dataMsgOk: dataMsgOk,
@@ -1649,13 +1694,45 @@
         };
       },
       template: `
-<div class="min-h-screen pb-24 md:pb-8">
-  <div v-if="toast" class="fixed inset-x-0 top-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
+<div>
+  <div v-if="toast" class="fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 pointer-events-none">
     <div role="alert" class="pointer-events-auto flex w-full max-w-4xl items-start gap-3 rounded-xl bg-rose-600 px-4 py-3 text-sm text-white shadow-lg">
       <p class="min-w-0 flex-1 break-words">{{ toast }}</p>
       <button class="grid size-8 shrink-0 place-items-center rounded-full bg-white/20 text-base active:bg-white/30" aria-label="關閉" @click="dismissToast">✕</button>
     </div>
   </div>
+  <div v-if="!authReady" class="grid min-h-screen place-items-center bg-slate-50">
+    <div class="flex flex-col items-center gap-3 text-slate-500">
+      <div class="size-10 animate-spin rounded-full border-4 border-slate-200 border-t-teal-600"></div>
+      <p class="text-sm">驗證登入狀態…</p>
+    </div>
+  </div>
+  <div v-else-if="!isAuthorized" class="grid min-h-screen place-items-center bg-slate-50 px-4">
+    <div class="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-slate-200">
+      <h1 class="text-xl font-bold text-slate-800">GlucoSync｜個人代謝與健康管理系統</h1>
+      <p class="mt-3 text-sm text-slate-500">此系統僅限授權帳號存取，請登入以檢視紀錄</p>
+      <button class="mt-8 w-full rounded-xl bg-teal-700 py-3.5 text-base font-semibold text-white active:bg-teal-800 disabled:opacity-60"
+        :disabled="authBusy" @click="handleSignIn">🔑 使用 Google 帳號登入</button>
+      <button class="mt-4 text-xs text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline" @click="openFirebaseSetup">
+        {{ firebaseConfigured ? '重新設定 Firebase' : 'Firebase 尚未設定？貼上設定' }}
+      </button>
+    </div>
+  </div>
+  <div v-if="!isAuthorized && showFirebaseSetup" class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center" @click.self="showFirebaseSetup = false">
+    <div class="w-full rounded-t-2xl bg-white p-5 sm:max-w-lg sm:rounded-2xl">
+      <h2 class="text-lg font-semibold text-slate-800">Firebase 設定</h2>
+      <p class="mt-1 text-xs text-slate-500">僅用於初始化登入，不會顯示個人紀錄。</p>
+      <textarea v-model="settings.firebaseConfig" rows="6" spellcheck="false"
+        placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'
+        class="mt-4 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-xs"></textarea>
+      <p v-if="settingsError" class="mt-3 rounded-lg bg-rose-50 p-2 text-sm text-rose-600">{{ settingsError }}</p>
+      <div class="mt-5 grid grid-cols-2 gap-3">
+        <button class="rounded-xl bg-slate-100 py-3 text-slate-700" @click="showFirebaseSetup = false">取消</button>
+        <button class="rounded-xl bg-teal-700 py-3 font-semibold text-white" @click="submitFirebaseSetup">儲存並重新載入</button>
+      </div>
+    </div>
+  </div>
+  <div v-if="isAuthorized" class="min-h-screen pb-24 md:pb-8">
   <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
     <div class="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3">
       <div class="min-w-0 flex-1">
@@ -1667,18 +1744,12 @@
         </p>
       </div>
       <div class="flex shrink-0 items-center gap-1.5">
-        <template v-if="!authUser">
-          <button class="rounded-full bg-white/15 px-3 py-2 text-xs font-medium active:bg-white/25 disabled:opacity-60"
-            :disabled="authBusy" @click="handleSignIn">🔑 Google 登入</button>
-        </template>
-        <template v-else>
-          <img v-if="authUser.photoURL" :src="authUser.photoURL" alt=""
-            class="size-8 rounded-full object-cover ring-1 ring-white/40" referrerpolicy="no-referrer" />
-          <span v-else class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold">{{ userInitials }}</span>
-          <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
-          <button class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
-            :disabled="authBusy" @click="handleSignOut">登出</button>
-        </template>
+        <img v-if="authUser.photoURL" :src="authUser.photoURL" alt=""
+          class="size-8 rounded-full object-cover ring-1 ring-white/40" referrerpolicy="no-referrer" />
+        <span v-else class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold">{{ userInitials }}</span>
+        <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
+        <button class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
+          :disabled="authBusy" @click="handleSignOut">登出</button>
         <button class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20" aria-label="設定" @click="openSettings">⚙️</button>
       </div>
     </div>
@@ -1705,7 +1776,7 @@
   </nav>
 
   <!-- Settings modal -->
-  <div v-if="showSettings" class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center" @click.self="showSettings = false">
+  <div v-if="isAuthorized && showSettings" class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center" @click.self="showSettings = false">
     <div class="max-h-[90vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 sm:max-w-lg sm:rounded-2xl">
       <h2 class="text-lg font-semibold text-slate-800">設定</h2>
       <p class="mt-1 text-xs text-slate-500">金鑰僅儲存於此瀏覽器的 localStorage，不會寫入程式碼。</p>
@@ -1780,6 +1851,7 @@
       </div>
       <p v-if="dataMsg" class="mt-2 text-sm" :class="dataMsgOk ? 'text-emerald-700' : 'text-rose-600'">{{ dataMsg }}</p>
     </div>
+  </div>
   </div>
 </div>`
     };
