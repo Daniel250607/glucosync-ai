@@ -210,8 +210,20 @@
     function saveSettings(s) { writeJSON(SETTINGS_KEY, s); }
     function getGeminiKey() { return loadSettings().geminiApiKey || ''; }
     var DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-    var GEMINI_MODEL_OPTIONS = ['gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    var GEMINI_MODEL_OPTIONS = ['gemini-3.8-flash'];
+    var DEFAULT_THINKING_BUDGET = 0;
+    var THINKING_LEVEL_OPTIONS = [
+      { label: '極速 / 關閉', budget: 0, hint: '建議用於即時餐點紀錄，約 1–2 秒' },
+      { label: '低思考', budget: 1024, hint: '約 3–5 秒' },
+      { label: '中思考', budget: 4096, hint: '約 6–10 秒' },
+      { label: '高思考', budget: 8192, hint: '詳細檢驗解讀' }
+    ];
     function getGeminiModel() { return (loadSettings().geminiModel || '').trim() || DEFAULT_GEMINI_MODEL; }
+    function normalizeThinkingBudget(value) {
+      var n = parseInt(value != null && value !== '' ? value : DEFAULT_THINKING_BUDGET, 10);
+      return isFinite(n) && n >= 0 ? n : DEFAULT_THINKING_BUDGET;
+    }
+    function getThinkingBudget() { return normalizeThinkingBudget(loadSettings().thinkingBudget); }
 
     // Accepts strict JSON or a pasted JS object literal ({ apiKey: "..." }).
     function parseFirebaseConfig(text) {
@@ -548,7 +560,12 @@
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
           contents: [{ role: 'user', parts: parts }],
-          generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: schema }
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: 'application/json',
+            responseSchema: schema,
+            thinkingConfig: { thinkingBudget: getThinkingBudget() }
+          }
         })
       });
       var data = await res.json();
@@ -1507,7 +1524,7 @@
 
         // ---- settings ----
         var showSettings = ref(false);
-        var settings = reactive({ geminiApiKey: '', firebaseConfig: '', geminiModel: DEFAULT_GEMINI_MODEL });
+        var settings = reactive({ geminiApiKey: '', firebaseConfig: '', geminiModel: DEFAULT_GEMINI_MODEL, thinkingBudget: DEFAULT_THINKING_BUDGET });
         var settingsError = ref('');
         var dataMsg = ref('');
         var dataMsgOk = ref(true);
@@ -1551,11 +1568,12 @@
             if (!cfg || !cfg.projectId) { settingsError.value = 'Firebase 設定格式錯誤，需包含 projectId。'; return; }
           }
           var prev = loadSettings();
-          saveSettings({
+          saveSettings(Object.assign({}, prev, {
             geminiApiKey: prev.geminiApiKey || '',
             firebaseConfig: text,
-            geminiModel: prev.geminiModel || DEFAULT_GEMINI_MODEL
-          });
+            geminiModel: prev.geminiModel || DEFAULT_GEMINI_MODEL,
+            thinkingBudget: normalizeThinkingBudget(prev.thinkingBudget)
+          }));
           showFirebaseSetup.value = false;
           location.reload();
         }
@@ -1602,9 +1620,23 @@
           settings.geminiApiKey = s.geminiApiKey || '';
           settings.firebaseConfig = s.firebaseConfig || '';
           settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL;
+          settings.thinkingBudget = normalizeThinkingBudget(s.thinkingBudget != null && s.thinkingBudget !== '' ? s.thinkingBudget : DEFAULT_THINKING_BUDGET);
           settingsError.value = ''; dataMsg.value = '';
           loadDraft();
           showSettings.value = true;
+        }
+
+        function thinkingLevelHint() {
+          var b = Number(settings.thinkingBudget);
+          for (var i = 0; i < THINKING_LEVEL_OPTIONS.length; i++) {
+            if (THINKING_LEVEL_OPTIONS[i].budget === b) {
+              var opt = THINKING_LEVEL_OPTIONS[i];
+              return opt.budget === 0
+                ? opt.hint + '。思考預算 0 會略過長推理。'
+                : opt.hint + '（thinkingBudget ' + opt.budget + '）。';
+            }
+          }
+          return '自訂思考預算。';
         }
 
         function submitSettings() {
@@ -1617,11 +1649,12 @@
           var problem = validateDraft();
           if (problem) { settingsError.value = problem; return; }
           var prev = loadSettings();
-          saveSettings({
+          saveSettings(Object.assign({}, prev, {
             geminiApiKey: settings.geminiApiKey.trim(),
             firebaseConfig: text,
-            geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL
-          });
+            geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+            thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget)
+          }));
           // Only write an override when something actually differs from the current effective config.
           var nums = {};
           Object.keys(draft.targets).forEach(function (k) { nums[k] = Number(draft.targets[k]); });
@@ -1690,7 +1723,8 @@
           draft: draft, TARGET_FIELDS: TARGET_FIELDS, addDraftMed: addDraftMed, removeDraftMed: removeDraftMed,
           resetTargetsAndMeds: resetTargetsAndMeds,
           toast: toast, dismissToast: dismissToast,
-          DEFAULT_GEMINI_MODEL: DEFAULT_GEMINI_MODEL, GEMINI_MODEL_OPTIONS: GEMINI_MODEL_OPTIONS
+          DEFAULT_GEMINI_MODEL: DEFAULT_GEMINI_MODEL, GEMINI_MODEL_OPTIONS: GEMINI_MODEL_OPTIONS,
+          THINKING_LEVEL_OPTIONS: THINKING_LEVEL_OPTIONS, thinkingLevelHint: thinkingLevelHint
         };
       },
       template: `
@@ -1793,7 +1827,15 @@
           :class="settings.geminiModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
           @click="settings.geminiModel = m">{{ m }}</button>
       </div>
-      <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GEMINI_MODEL }}。若遇到 503 負載過高，可改選 gemini-2.0-flash 或 gemini-1.5-flash。</p>
+      <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GEMINI_MODEL }}。可在欄位填入其他有效模型名稱；舊版 gemini-2.0-flash / gemini-1.5-flash 已不適用新金鑰。</p>
+
+      <p class="mt-4 text-sm font-medium text-slate-700">🧠 AI 思考程度 (Thinking Level)</p>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <button v-for="opt in THINKING_LEVEL_OPTIONS" :key="opt.budget" type="button" class="rounded-full px-3 py-1.5 text-xs"
+          :class="Number(settings.thinkingBudget) === opt.budget ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+          @click="settings.thinkingBudget = opt.budget">{{ opt.label }}</button>
+      </div>
+      <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint() }}</p>
 
       <label class="mt-4 block text-sm font-medium text-slate-700">Firebase 設定 (JSON，可留空使用本機儲存)
         <textarea v-model="settings.firebaseConfig" rows="6" spellcheck="false"
