@@ -34,7 +34,13 @@ import {
   resetCustom,
   updateCustom,
 } from './data/presets.js'
-import { DEFAULT_GEMINI_MODEL, GEMINI_MODEL_OPTIONS } from './services/gemini.js'
+import {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_THINKING_BUDGET,
+  GEMINI_MODEL_OPTIONS,
+  THINKING_LEVEL_OPTIONS,
+  normalizeThinkingBudget,
+} from './services/gemini.js'
 
 const tabs = [
   { id: 'daily', label: '今日記錄', icon: '📝' },
@@ -112,8 +118,21 @@ async function addLab(lab) {
 
 // ---------- settings ----------
 const showSettings = ref(false)
-const settings = reactive({ geminiApiKey: '', firebaseConfig: '', geminiModel: DEFAULT_GEMINI_MODEL })
+const settings = reactive({
+  geminiApiKey: '',
+  firebaseConfig: '',
+  geminiModel: DEFAULT_GEMINI_MODEL,
+  thinkingBudget: DEFAULT_THINKING_BUDGET,
+})
 const settingsError = ref('')
+const thinkingLevelHint = computed(() => {
+  const opt = THINKING_LEVEL_OPTIONS.find((o) => o.budget === Number(settings.thinkingBudget))
+  return opt
+    ? opt.budget === 0
+      ? `${opt.hint}。思考預算 0 會略過長推理。`
+      : `${opt.hint}（thinkingBudget ${opt.budget}）。`
+    : '自訂思考預算。'
+})
 
 // Global toast: visible 6s, manual dismiss. Used so Gemini errors are not buried in the console.
 const toast = ref('')
@@ -176,9 +195,11 @@ function submitFirebaseSetup() {
   }
   const prev = loadSettings()
   saveSettings({
+    ...prev,
     geminiApiKey: prev.geminiApiKey || '',
     firebaseConfig: text,
     geminiModel: prev.geminiModel || DEFAULT_GEMINI_MODEL,
+    thinkingBudget: normalizeThinkingBudget(prev.thinkingBudget),
   })
   showFirebaseSetup.value = false
   location.reload()
@@ -220,6 +241,9 @@ function openSettings() {
   settings.geminiApiKey = s.geminiApiKey || ''
   settings.firebaseConfig = s.firebaseConfig || ''
   settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
+  settings.thinkingBudget = normalizeThinkingBudget(
+    s.thinkingBudget != null && s.thinkingBudget !== '' ? s.thinkingBudget : DEFAULT_THINKING_BUDGET,
+  )
   settingsError.value = ''
   dataMsg.value = ''
   loadDraft()
@@ -256,9 +280,11 @@ function submitSettings() {
   }
   const prev = loadSettings()
   saveSettings({
+    ...prev,
     geminiApiKey: settings.geminiApiKey.trim(),
     firebaseConfig: text,
     geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+    thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
   })
   // Only write an override when something actually differs from the current effective config.
   const nums = Object.fromEntries(Object.entries(draft.targets).map(([k, v]) => [k, Number(v)]))
@@ -507,8 +533,23 @@ async function importData(e) {
           </button>
         </div>
         <p class="mt-1 text-xs text-slate-400">
-          預設 {{ DEFAULT_GEMINI_MODEL }}。若遇到 503 負載過高，可改選 gemini-2.0-flash 或 gemini-1.5-flash。
+          預設 {{ DEFAULT_GEMINI_MODEL }}。可在欄位填入其他有效模型名稱；舊版 gemini-2.0-flash / gemini-1.5-flash 已不適用新金鑰。
         </p>
+
+        <p class="mt-4 text-sm font-medium text-slate-700">🧠 AI 思考程度 (Thinking Level)</p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button
+            v-for="opt in THINKING_LEVEL_OPTIONS"
+            :key="opt.budget"
+            type="button"
+            class="rounded-full px-3 py-1.5 text-xs"
+            :class="Number(settings.thinkingBudget) === opt.budget ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+            @click="settings.thinkingBudget = opt.budget"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+        <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint }}</p>
 
         <label class="mt-4 block text-sm font-medium text-slate-700">
           Firebase 設定 (JSON，可留空使用本機儲存)

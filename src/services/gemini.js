@@ -5,10 +5,27 @@ import { live, medLabel } from '../data/presets.js'
 import { loadSettings } from '../firebase.js'
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash'
-export const GEMINI_MODEL_OPTIONS = ['gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+export const GEMINI_MODEL_OPTIONS = ['gemini-3.8-flash']
+export const DEFAULT_THINKING_BUDGET = 0
+export const THINKING_LEVEL_OPTIONS = [
+  { label: '極速 / 關閉', budget: 0, hint: '建議用於即時餐點紀錄，約 1–2 秒' },
+  { label: '低思考', budget: 1024, hint: '約 3–5 秒' },
+  { label: '中思考', budget: 4096, hint: '約 6–10 秒' },
+  { label: '高思考', budget: 8192, hint: '詳細檢驗解讀' },
+]
 
 export function getGeminiModel() {
   return (loadSettings().geminiModel || '').trim() || DEFAULT_GEMINI_MODEL
+}
+
+/** thinkingBudget 0 explicitly disables extended reasoning tokens. */
+export function normalizeThinkingBudget(value) {
+  const n = parseInt(value ?? DEFAULT_THINKING_BUDGET, 10)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_THINKING_BUDGET
+}
+
+export function getThinkingBudget() {
+  return normalizeThinkingBudget(loadSettings().thinkingBudget)
 }
 
 function geminiEndpoint(model) {
@@ -193,6 +210,9 @@ async function generate({ apiKey, parts, schema }) {
         temperature: 0.2,
         responseMimeType: 'application/json',
         responseSchema: schema,
+        thinkingConfig: {
+          thinkingBudget: getThinkingBudget(),
+        },
       },
     }),
   })
