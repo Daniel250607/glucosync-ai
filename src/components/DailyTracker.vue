@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, reactive, ref } from 'vue'
 import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
 import { analyzeMeal, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
@@ -8,6 +8,7 @@ const props = defineProps({
   day: { type: Object, required: true },
 })
 const emit = defineEmits(['update', 'open-settings'])
+const showToast = inject('showToast', () => {})
 
 // ---------- helpers ----------
 const clone = (o) => JSON.parse(JSON.stringify(o))
@@ -64,8 +65,24 @@ const mealText = ref('')
 const selectedTags = ref([])
 const photo = ref(null) // { mimeType, data, preview }
 const busy = ref(false)
+const elapsed = ref(0)
 const error = ref('')
 const latestId = ref(null)
+let elapsedTimer = null
+function startBusy() {
+  busy.value = true
+  elapsed.value = 0
+  clearInterval(elapsedTimer)
+  elapsedTimer = setInterval(() => {
+    elapsed.value += 1
+  }, 1000)
+}
+function stopBusy() {
+  busy.value = false
+  clearInterval(elapsedTimer)
+  elapsedTimer = null
+}
+onBeforeUnmount(stopBusy)
 
 function applyPreset(p) {
   mealText.value = p.description
@@ -231,7 +248,7 @@ async function submitMeal(withAI) {
       emit('open-settings')
       return
     }
-    busy.value = true
+    startBusy()
     try {
       const { date, ...ctx } = summarizeDay(props.day)
       entry.analysis = await analyzeMeal({
@@ -242,11 +259,13 @@ async function submitMeal(withAI) {
         dayContext: ctx,
       })
     } catch (err) {
-      error.value = err.message || String(err)
-      busy.value = false
+      const msg = err.message || String(err)
+      error.value = msg
+      showToast(msg)
+      stopBusy()
       return
     }
-    busy.value = false
+    stopBusy()
   }
   commit((d) => d.meals.push(entry))
   latestId.value = withAI ? id : null
@@ -568,7 +587,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           :disabled="busy"
           @click="submitMeal(true)"
         >
-          {{ busy ? 'AI 分析中…' : '✨ AI 分析並記錄' }}
+          {{ busy ? `AI 分析中… ${elapsed}s` : '✨ AI 分析並記錄' }}
         </button>
         <button
           class="rounded-xl bg-slate-100 py-3.5 text-slate-700 disabled:opacity-50 active:bg-slate-200"

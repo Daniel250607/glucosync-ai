@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, provide, reactive, ref } from 'vue'
 import DailyTracker from './components/DailyTracker.vue'
 import TrendChart from './components/TrendChart.vue'
 import LabMilestones from './components/LabMilestones.vue'
@@ -28,6 +28,7 @@ import {
   resetCustom,
   updateCustom,
 } from './data/presets.js'
+import { DEFAULT_GEMINI_MODEL, GEMINI_MODEL_OPTIONS } from './services/gemini.js'
 
 const tabs = [
   { id: 'daily', label: '今日記錄', icon: '📝' },
@@ -67,8 +68,25 @@ async function addLab(lab) {
 
 // ---------- settings ----------
 const showSettings = ref(false)
-const settings = reactive({ geminiApiKey: '', firebaseConfig: '' })
+const settings = reactive({ geminiApiKey: '', firebaseConfig: '', geminiModel: DEFAULT_GEMINI_MODEL })
 const settingsError = ref('')
+
+// Global toast: visible 6s, manual dismiss. Used so Gemini errors are not buried in the console.
+const toast = ref('')
+let toastTimer = null
+function showToast(msg) {
+  if (!msg) return
+  toast.value = String(msg)
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toast.value = ''
+  }, 6000)
+}
+function dismissToast() {
+  toast.value = ''
+  clearTimeout(toastTimer)
+}
+provide('showToast', showToast)
 
 // Draft copy of targets + medications: only applied when the user presses 儲存.
 const draft = reactive({ targets: { ...TARGETS }, medications: [] })
@@ -105,6 +123,7 @@ function openSettings() {
   const s = loadSettings()
   settings.geminiApiKey = s.geminiApiKey || ''
   settings.firebaseConfig = s.firebaseConfig || ''
+  settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
   settingsError.value = ''
   dataMsg.value = ''
   loadDraft()
@@ -140,7 +159,11 @@ function submitSettings() {
     return
   }
   const prev = loadSettings()
-  saveSettings({ geminiApiKey: settings.geminiApiKey.trim(), firebaseConfig: text })
+  saveSettings({
+    geminiApiKey: settings.geminiApiKey.trim(),
+    firebaseConfig: text,
+    geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+  })
   // Only write an override when something actually differs from the current effective config.
   const nums = Object.fromEntries(Object.entries(draft.targets).map(([k, v]) => [k, Number(v)]))
   if (JSON.stringify(nums) !== JSON.stringify(live.targets)) updateCustom('targets', nums)
@@ -194,6 +217,23 @@ async function importData(e) {
 
 <template>
   <div class="min-h-screen pb-24 md:pb-8">
+    <!-- Global error toast (top of viewport, 6s / dismiss) -->
+    <div v-if="toast" class="fixed inset-x-0 top-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
+      <div
+        role="alert"
+        class="pointer-events-auto flex w-full max-w-4xl items-start gap-3 rounded-xl bg-rose-600 px-4 py-3 text-sm text-white shadow-lg"
+      >
+        <p class="min-w-0 flex-1 break-words">{{ toast }}</p>
+        <button
+          class="grid size-8 shrink-0 place-items-center rounded-full bg-white/20 text-base active:bg-white/30"
+          aria-label="關閉"
+          @click="dismissToast"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
     <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
       <div class="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3">
         <div class="min-w-0 flex-1">
@@ -277,6 +317,33 @@ async function importData(e) {
             class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base"
           />
         </label>
+
+        <label class="mt-4 block text-sm font-medium text-slate-700">
+          Gemini 模型名稱 (Model ID)
+          <input
+            v-model="settings.geminiModel"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="gemini-3.8-flash"
+            class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
+          />
+        </label>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button
+            v-for="m in GEMINI_MODEL_OPTIONS"
+            :key="m"
+            type="button"
+            class="rounded-full px-3 py-1.5 text-xs"
+            :class="settings.geminiModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+            @click="settings.geminiModel = m"
+          >
+            {{ m }}
+          </button>
+        </div>
+        <p class="mt-1 text-xs text-slate-400">
+          預設 {{ DEFAULT_GEMINI_MODEL }}。若遇到 503 負載過高，可改選 gemini-2.0-flash 或 gemini-1.5-flash。
+        </p>
 
         <label class="mt-4 block text-sm font-medium text-slate-700">
           Firebase 設定 (JSON，可留空使用本機儲存)

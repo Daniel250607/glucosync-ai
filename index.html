@@ -28,6 +28,7 @@
     var Vue_ = window.Vue;
     var createApp = Vue_.createApp, ref = Vue_.ref, reactive = Vue_.reactive, computed = Vue_.computed;
     var watch = Vue_.watch, onMounted = Vue_.onMounted, onBeforeUnmount = Vue_.onBeforeUnmount;
+    var provide = Vue_.provide, inject = Vue_.inject;
 
     /* =====================================================================
      * 1. DATA  (from src/data/presets.js)
@@ -207,6 +208,9 @@
     function loadSettings() { return readJSON(SETTINGS_KEY, {}); }
     function saveSettings(s) { writeJSON(SETTINGS_KEY, s); }
     function getGeminiKey() { return loadSettings().geminiApiKey || ''; }
+    var DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+    var GEMINI_MODEL_OPTIONS = ['gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    function getGeminiModel() { return (loadSettings().geminiModel || '').trim() || DEFAULT_GEMINI_MODEL; }
 
     // Accepts strict JSON or a pasted JS object literal ({ apiKey: "..." }).
     function parseFirebaseConfig(text) {
@@ -335,8 +339,9 @@
     /* =====================================================================
      * 3. GEMINI SERVICE  (from src/services/gemini.js)
      * ===================================================================== */
-    var MODEL = 'gemini-3.8-flash';
-    var ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent';
+    function geminiEndpoint(model) {
+      return 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+    }
 
     var HEALTH_CONTEXT = [
       '# Health Context (Baseline) — Lab Date: 115/09/05 (2026-09-05)',
@@ -369,7 +374,8 @@
       '3. Glycemia / triglycerides (HbA1c [X]%, TG [X]): flag refined starch, sugary drinks, sauces with sugar, large rice/noodle portions, and fried foods. Encourage eating order: vegetables -> protein -> carbohydrate (half portion), and post-meal light activity (marching in place 15-20 min).\n' +
       '4. Renal / urine (UAcr [X], U-Specific Gravity [X], glycosuria): monitor sodium (aim < 2300 mg/day, ~< 800 mg/meal) and hydration (2000-2500 cc/day). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.\n' +
       '5. Never give a diagnosis or change medication doses. For medication questions advise consulting the treating physician.\n' +
-      '6. Estimate nutrition honestly; when uncertain, give a reasonable estimate and say so in actionable_advice.\n\n' +
+      '6. Estimate nutrition honestly; when uncertain, give a reasonable estimate and say so in actionable_advice.\n' +
+      '7. Keep actionable_advice to at most 60 words (about 2 short Traditional Chinese sentences). No long paragraphs.\n\n' +
       '=== TRAFFIC LIGHT SCHEME ===\n' +
       'Each alert has "level" in {green, yellow, red} and a short "message" (<= 40 Chinese characters):\n' +
       '- glycemic_tg_alert: carbohydrate load / refined starch / sugar / fried food effect on glucose and triglycerides.\n' +
@@ -445,9 +451,50 @@
         'saturated_fat_guidance', 'hydration_sodium_guidance', 'safety_flags']
     };
 
+    var RETRY_WAITS_MS = [1500, 3000];
+    var HTTP_HINT = {
+      429: '請求過於頻繁，請稍後再試',
+      500: 'Google 伺服器內部錯誤，請稍後再試',
+      503: 'Google 伺服器負載過高，請稍後再試',
+      401: 'API Key 無效或已過期，請至設定檢查',
+      403: 'API Key 無權限或配額不足，請至設定檢查',
+      404: '找不到此模型，請至設定更換模型名稱'
+    };
+    function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    async function parseErrorBody(res) {
+      try { return ((await res.json()).error || {}).message || ''; }
+      catch (e) {
+        try { return (await res.text()).slice(0, 200); } catch (e2) { return ''; }
+      }
+    }
+    function formatHttpError(status, detail) {
+      var hint = HTTP_HINT[status] || 'Gemini API 呼叫失敗';
+      return detail ? ('[HTTP ' + status + '] ' + hint + ' — ' + detail) : ('[HTTP ' + status + '] ' + hint);
+    }
+    async function fetchWithRetry(url, init) {
+      var lastErr;
+      for (var attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
+        var res;
+        try { res = await fetch(url, init); }
+        catch (e) {
+          lastErr = new Error('網路連線失敗，請檢查網路後再試。');
+          if (attempt < RETRY_WAITS_MS.length) { await sleep(RETRY_WAITS_MS[attempt]); continue; }
+          throw lastErr;
+        }
+        if (res.ok) return res;
+        lastErr = new Error(formatHttpError(res.status, await parseErrorBody(res)));
+        if ((res.status === 503 || res.status === 429) && attempt < RETRY_WAITS_MS.length) {
+          await sleep(RETRY_WAITS_MS[attempt]);
+          continue;
+        }
+        throw lastErr;
+      }
+      throw lastErr;
+    }
+
     async function generate(apiKey, parts, schema) {
       if (!apiKey) throw new Error('尚未設定 Gemini API Key，請至右上角設定。');
-      var res = await fetch(ENDPOINT, {
+      var res = await fetchWithRetry(geminiEndpoint(getGeminiModel()), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
@@ -456,11 +503,6 @@
           generationConfig: { temperature: 0.2, responseMimeType: 'application/json', responseSchema: schema }
         })
       });
-      if (!res.ok) {
-        var detail = '';
-        try { detail = ((await res.json()).error || {}).message || ''; } catch (e) { /* ignore */ }
-        throw new Error(('Gemini API 錯誤 (' + res.status + ') ' + detail).trim());
-      }
       var data = await res.json();
       var cand = data && data.candidates && data.candidates[0];
       var text = cand && cand.content && cand.content.parts
@@ -616,8 +658,17 @@
         var selectedTags = ref([]);
         var photo = ref(null);
         var busy = ref(false);
+        var elapsed = ref(0);
         var error = ref('');
         var latestId = ref(null);
+        var elapsedTimer = null;
+        var showToast = inject('showToast', function () {});
+        function startBusy() {
+          busy.value = true; elapsed.value = 0;
+          clearInterval(elapsedTimer);
+          elapsedTimer = setInterval(function () { elapsed.value += 1; }, 1000);
+        }
+        function stopBusy() { busy.value = false; clearInterval(elapsedTimer); elapsedTimer = null; }
 
         function applyPreset(p) { mealText.value = p.description; }
         function toggleTag(t) {
@@ -730,7 +781,7 @@
           if (withAI) {
             var apiKey = getGeminiKey();
             if (!apiKey) { error.value = '尚未設定 Gemini API Key。'; ctx.emit('open-settings'); return; }
-            busy.value = true;
+            startBusy();
             try {
               var dayCtx = summarizeDay(props.day);
               delete dayCtx.date;
@@ -741,10 +792,11 @@
               });
             } catch (err) {
               error.value = err.message || String(err);
-              busy.value = false;
+              showToast(error.value);
+              stopBusy();
               return;
             }
-            busy.value = false;
+            stopBusy();
           }
           commit(function (d) { d.meals.push(entry); d.ai_summary = null; });
           latestId.value = withAI ? id : null;
@@ -785,6 +837,7 @@
             commit(function (d) { d.ai_summary = result; });
           } catch (err) {
             summaryError.value = err.message || String(err);
+            showToast(summaryError.value);
           } finally {
             summaryBusy.value = false;
           }
@@ -806,7 +859,7 @@
           hydrationPct: hydrationPct, hydrationMinPct: hydrationMinPct, hydrationReached: hydrationReached, addWater: addWater,
           toggleMed: toggleMed, medDone: medDone,
           addExercise: addExercise, resetExercise: resetExercise, exerciseReached: exerciseReached,
-          mealText: mealText, selectedTags: selectedTags, photo: photo, busy: busy, error: error,
+          mealText: mealText, selectedTags: selectedTags, photo: photo, busy: busy, elapsed: elapsed, error: error,
           applyPreset: applyPreset, toggleTag: toggleTag, onPhoto: onPhoto, submitMeal: submitMeal, removeMeal: removeMeal,
           mealToShow: mealToShow, totals: totals, presetGroups: presetGroups,
           summaryBusy: summaryBusy, summaryError: summaryError, runDaySummary: runDaySummary
@@ -966,7 +1019,7 @@
 
     <div class="mt-3 grid grid-cols-3 gap-2">
       <button class="col-span-2 rounded-xl bg-teal-700 py-3.5 font-semibold text-white disabled:opacity-50 active:bg-teal-800" :disabled="busy" @click="submitMeal(true)">
-        {{ busy ? 'AI 分析中…' : '✨ AI 分析並記錄' }}
+        {{ busy ? ('AI 分析中… ' + elapsed + 's') : '✨ AI 分析並記錄' }}
       </button>
       <button class="rounded-xl bg-slate-100 py-3.5 text-slate-700 disabled:opacity-50 active:bg-slate-200" :disabled="busy" @click="submitMeal(false)">只記錄</button>
     </div>
@@ -1155,6 +1208,7 @@
       props: { labs: { type: Array, required: true }, days: { type: Object, required: true } },
       emits: ['add-lab', 'open-settings'],
       setup: function (props, ctx) {
+        var showToast = inject('showToast', function () {});
         var latest = computed(function () { return props.labs.length ? props.labs[props.labs.length - 1] : null; });
 
         function statusOf(field, value) {
@@ -1203,6 +1257,7 @@
             evaluation.value = await evaluateLabs({ apiKey: apiKey, labs: props.labs, recentDays: recentDays });
           } catch (err) {
             evalError.value = err.message || String(err);
+            showToast(evalError.value);
           } finally {
             evaluating.value = false;
           }
@@ -1368,10 +1423,21 @@
 
         // ---- settings ----
         var showSettings = ref(false);
-        var settings = reactive({ geminiApiKey: '', firebaseConfig: '' });
+        var settings = reactive({ geminiApiKey: '', firebaseConfig: '', geminiModel: DEFAULT_GEMINI_MODEL });
         var settingsError = ref('');
         var dataMsg = ref('');
         var dataMsgOk = ref(true);
+
+        var toast = ref('');
+        var toastTimer = null;
+        function showToast(msg) {
+          if (!msg) return;
+          toast.value = String(msg);
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(function () { toast.value = ''; }, 6000);
+        }
+        function dismissToast() { toast.value = ''; clearTimeout(toastTimer); }
+        provide('showToast', showToast);
 
         // Draft copy of targets + medications: only applied when the user presses 儲存.
         var draft = reactive({ targets: Object.assign({}, TARGETS), medications: [] });
@@ -1414,6 +1480,7 @@
           var s = loadSettings();
           settings.geminiApiKey = s.geminiApiKey || '';
           settings.firebaseConfig = s.firebaseConfig || '';
+          settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL;
           settingsError.value = ''; dataMsg.value = '';
           loadDraft();
           showSettings.value = true;
@@ -1429,7 +1496,11 @@
           var problem = validateDraft();
           if (problem) { settingsError.value = problem; return; }
           var prev = loadSettings();
-          saveSettings({ geminiApiKey: settings.geminiApiKey.trim(), firebaseConfig: text });
+          saveSettings({
+            geminiApiKey: settings.geminiApiKey.trim(),
+            firebaseConfig: text,
+            geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL
+          });
           // Only write an override when something actually differs from the current effective config.
           var nums = {};
           Object.keys(draft.targets).forEach(function (k) { nums[k] = Number(draft.targets[k]); });
@@ -1492,11 +1563,19 @@
           showSettings: showSettings, settings: settings, settingsError: settingsError, openSettings: openSettings, submitSettings: submitSettings,
           exportData: exportData, importData: importData, dataMsg: dataMsg, dataMsgOk: dataMsgOk,
           draft: draft, TARGET_FIELDS: TARGET_FIELDS, addDraftMed: addDraftMed, removeDraftMed: removeDraftMed,
-          resetTargetsAndMeds: resetTargetsAndMeds
+          resetTargetsAndMeds: resetTargetsAndMeds,
+          toast: toast, dismissToast: dismissToast,
+          DEFAULT_GEMINI_MODEL: DEFAULT_GEMINI_MODEL, GEMINI_MODEL_OPTIONS: GEMINI_MODEL_OPTIONS
         };
       },
       template: `
 <div class="min-h-screen pb-24 md:pb-8">
+  <div v-if="toast" class="fixed inset-x-0 top-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
+    <div role="alert" class="pointer-events-auto flex w-full max-w-4xl items-start gap-3 rounded-xl bg-rose-600 px-4 py-3 text-sm text-white shadow-lg">
+      <p class="min-w-0 flex-1 break-words">{{ toast }}</p>
+      <button class="grid size-8 shrink-0 place-items-center rounded-full bg-white/20 text-base active:bg-white/30" aria-label="關閉" @click="dismissToast">✕</button>
+    </div>
+  </div>
   <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
     <div class="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3">
       <div class="min-w-0 flex-1">
@@ -1536,6 +1615,16 @@
       <label class="mt-4 block text-sm font-medium text-slate-700">Gemini API Key
         <input v-model="settings.geminiApiKey" type="password" autocomplete="off" placeholder="AIza..." class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base" />
       </label>
+
+      <label class="mt-4 block text-sm font-medium text-slate-700">Gemini 模型名稱 (Model ID)
+        <input v-model="settings.geminiModel" type="text" autocomplete="off" spellcheck="false" placeholder="gemini-3.8-flash" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm" />
+      </label>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <button v-for="m in GEMINI_MODEL_OPTIONS" :key="m" type="button" class="rounded-full px-3 py-1.5 text-xs"
+          :class="settings.geminiModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+          @click="settings.geminiModel = m">{{ m }}</button>
+      </div>
+      <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GEMINI_MODEL }}。若遇到 503 負載過高，可改選 gemini-2.0-flash 或 gemini-1.5-flash。</p>
 
       <label class="mt-4 block text-sm font-medium text-slate-700">Firebase 設定 (JSON，可留空使用本機儲存)
         <textarea v-model="settings.firebaseConfig" rows="6" spellcheck="false"

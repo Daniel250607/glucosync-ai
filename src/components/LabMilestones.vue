@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, inject, reactive, ref } from 'vue'
 import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE } from '../data/presets.js'
 import { evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
@@ -9,6 +9,7 @@ const props = defineProps({
   days: { type: Object, required: true },
 })
 const emit = defineEmits(['add-lab', 'open-settings'])
+const showToast = inject('showToast', () => {})
 
 const latest = computed(() => (props.labs.length ? props.labs[props.labs.length - 1] : null))
 
@@ -86,6 +87,7 @@ async function runEvaluation() {
     evaluation.value = await evaluateLabs({ apiKey, labs: props.labs, recentDays })
   } catch (err) {
     evalError.value = err.message || String(err)
+    showToast(evalError.value)
   } finally {
     evaluating.value = false
   }
