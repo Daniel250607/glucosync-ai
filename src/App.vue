@@ -4,19 +4,23 @@ import DailyTracker from './components/DailyTracker.vue'
 import TrendChart from './components/TrendChart.vue'
 import LabMilestones from './components/LabMilestones.vue'
 import {
-  backend,
   buildBackup,
   emptyDay,
+  formatAuthError,
   importBackup,
+  isCloudReady,
   loadCustomConfig,
   loadDays,
   loadLabs,
   loadSettings,
+  onAuthStateChanged,
   parseFirebaseConfig,
   saveCustomConfig,
   saveDay,
   saveLab,
   saveSettings,
+  signInWithGoogle,
+  signOutUser,
   todayKey,
 } from './firebase.js'
 import {
@@ -41,17 +45,35 @@ const days = ref({})
 const labs = ref([])
 const loaded = ref(false)
 const today = todayKey()
+const authUser = ref(null)
+const authBusy = ref(false)
 
 const todayData = computed(() => days.value[today] || emptyDay(today))
+const synced = computed(() => !!(authUser.value && isCloudReady()))
+const syncBadge = computed(() => (synced.value ? '☁️ 已同步' : '💾 本機快取'))
+const userInitials = computed(() => {
+  const u = authUser.value
+  if (!u) return '?'
+  const src = String(u.displayName || u.email || '?').trim()
+  return src.charAt(0).toUpperCase()
+})
 
 // Persist every user edit of presets / tags / targets / medications (localStorage + Firestore).
 onCustomConfigChange(() => saveCustomConfig(getCustomConfig()))
 
-onMounted(async () => {
+async function hydrateFromStorage() {
   applyCustomConfig(await loadCustomConfig())
   days.value = await loadDays()
   labs.value = await loadLabs()
+}
+
+onMounted(async () => {
+  await hydrateFromStorage()
   loaded.value = true
+  onAuthStateChanged(async (user) => {
+    authUser.value = user
+    if (user) await hydrateFromStorage()
+  })
 })
 
 async function updateDay(day) {
@@ -87,6 +109,31 @@ function dismissToast() {
   clearTimeout(toastTimer)
 }
 provide('showToast', showToast)
+
+async function handleSignIn() {
+  if (authBusy.value) return
+  authBusy.value = true
+  try {
+    await signInWithGoogle()
+  } catch (err) {
+    showToast(formatAuthError(err))
+  } finally {
+    authBusy.value = false
+  }
+}
+
+async function handleSignOut() {
+  if (authBusy.value) return
+  authBusy.value = true
+  try {
+    await signOutUser()
+    authUser.value = null
+  } catch (err) {
+    showToast(formatAuthError(err))
+  } finally {
+    authBusy.value = false
+  }
+}
 
 // Draft copy of targets + medications: only applied when the user presses 儲存.
 const draft = reactive({ targets: { ...TARGETS }, medications: [] })
@@ -235,20 +282,52 @@ async function importData(e) {
     </div>
 
     <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
-      <div class="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3">
+      <div class="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3">
         <div class="min-w-0 flex-1">
           <h1 class="truncate text-base font-bold sm:text-lg">GlucoSync｜AI 控糖降脂健康儀表板</h1>
           <p class="text-xs text-teal-100">
-            {{ today }} · 儲存：{{ backend === 'firestore' ? 'Firebase' : '本機 (localStorage)' }}
+            {{ today }} ·
+            <span
+              class="ml-0.5 rounded-full px-1.5 py-0.5 text-[10px] sm:text-xs"
+              :class="synced ? 'bg-emerald-400/25 text-emerald-50' : 'bg-white/10 text-teal-50'"
+            >{{ syncBadge }}</span>
           </p>
         </div>
-        <button
-          class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20"
-          aria-label="設定"
-          @click="openSettings"
-        >
-          ⚙️
-        </button>
+        <div class="flex shrink-0 items-center gap-1.5">
+          <template v-if="!authUser">
+            <button
+              class="rounded-full bg-white/15 px-3 py-2 text-xs font-medium active:bg-white/25 disabled:opacity-60"
+              :disabled="authBusy"
+              @click="handleSignIn"
+            >🔑 Google 登入</button>
+          </template>
+          <template v-else>
+            <img
+              v-if="authUser.photoURL"
+              :src="authUser.photoURL"
+              alt=""
+              class="size-8 rounded-full object-cover ring-1 ring-white/40"
+              referrerpolicy="no-referrer"
+            />
+            <span
+              v-else
+              class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold"
+            >{{ userInitials }}</span>
+            <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
+            <button
+              class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
+              :disabled="authBusy"
+              @click="handleSignOut"
+            >登出</button>
+          </template>
+          <button
+            class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20"
+            aria-label="設定"
+            @click="openSettings"
+          >
+            ⚙️
+          </button>
+        </div>
       </div>
       <!-- Desktop tabs -->
       <nav class="mx-auto hidden max-w-4xl gap-1 px-4 md:flex">

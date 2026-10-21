@@ -1,13 +1,30 @@
-// Persistence layer: Firestore when configured, otherwise localStorage.
+// Persistence layer: Firestore when configured AND authenticated, otherwise localStorage.
 // No secrets are hardcoded: config comes from user settings (localStorage)
 // or Vite environment variables (VITE_*).
 import { initializeApp } from 'firebase/app'
+import {
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged as firebaseOnAuthStateChanged,
+  signInWithPopup,
+  signOut,
+} from 'firebase/auth'
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore'
 
 const SETTINGS_KEY = 'glucosync.settings'
 const DAYS_KEY = 'glucosync.days'
 const LABS_KEY = 'glucosync.labs'
 const CONFIG_KEY = 'glucosync.customConfig'
+
+export const ALLOWED_EMAIL = 'daniel.chang.hy@gmail.com'
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase()
+}
+
+export function isAuthorizedEmail(email) {
+  return normalizeEmail(email) === ALLOWED_EMAIL
+}
 
 // ---------- Settings ----------
 export function loadSettings() {
@@ -65,15 +82,78 @@ function resolveFirebaseConfig() {
 }
 
 let db = null
+let auth = null
 try {
   const cfg = resolveFirebaseConfig()
-  if (cfg) db = getFirestore(initializeApp(cfg))
+  if (cfg) {
+    const app = initializeApp(cfg)
+    db = getFirestore(app)
+    auth = getAuth(app)
+  }
 } catch (err) {
   console.warn('[GlucoSync] Firebase init failed, using localStorage.', err)
   db = null
+  auth = null
 }
 
 export const backend = db ? 'firestore' : 'localStorage'
+
+export function isFirebaseConfigured() {
+  return !!(db && auth)
+}
+
+/** Cloud read/write is allowed only when Firebase is up and the signed-in email is whitelisted. */
+export function isCloudReady() {
+  return !!(db && auth && auth.currentUser && isAuthorizedEmail(auth.currentUser.email))
+}
+
+export function formatAuthError(err) {
+  const code = err && err.code
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return '已取消 Google 登入。'
+  }
+  if (code === 'auth/popup-blocked') {
+    return '瀏覽器封鎖了登入視窗，請允許彈出視窗後再試。'
+  }
+  if (code === 'auth/network-request-failed') {
+    return '網路連線失敗，請檢查網路後再試。'
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return '此網域尚未加入 Firebase 授權網域，請至 Firebase Console 設定。'
+  }
+  return (err && err.message) || String(err)
+}
+
+export async function signInWithGoogle() {
+  if (!auth) throw new Error('尚未設定 Firebase，請先在右上角設定貼上 Firebase 設定。')
+  const result = await signInWithPopup(auth, new GoogleAuthProvider())
+  const user = result.user
+  if (!isAuthorizedEmail(user && user.email)) {
+    await signOut(auth)
+    throw new Error('此 Google 帳號未獲授權，已登出。')
+  }
+  return user
+}
+
+export async function signOutUser() {
+  if (!auth) return
+  await signOut(auth)
+}
+
+export function onAuthStateChanged(callback) {
+  if (!auth) {
+    callback(null)
+    return () => {}
+  }
+  return firebaseOnAuthStateChanged(auth, async (user) => {
+    if (user && !isAuthorizedEmail(user.email)) {
+      await signOut(auth)
+      callback(null)
+      return
+    }
+    callback(user)
+  })
+}
 
 // ---------- Helpers ----------
 export function todayKey(d = new Date()) {
@@ -111,7 +191,7 @@ function writeLocal(key, value) {
 // ---------- Daily logs ----------
 export async function loadDays() {
   const local = readLocal(DAYS_KEY)
-  if (!db) return local
+  if (!isCloudReady()) return local
   try {
     const snap = await getDocs(collection(db, 'days'))
     const remote = {}
@@ -129,7 +209,7 @@ export async function saveDay(day) {
   const all = readLocal(DAYS_KEY)
   all[day.date] = day
   writeLocal(DAYS_KEY, all)
-  if (!db) return
+  if (!isCloudReady()) return
   try {
     await setDoc(doc(db, 'days', day.date), day)
   } catch (err) {
@@ -142,7 +222,7 @@ export async function saveDay(day) {
 // configured, mirrored to the `config/custom` document. The newer `updated_at` wins.
 export async function loadCustomConfig() {
   const local = readLocal(CONFIG_KEY)
-  if (!db) return local
+  if (!isCloudReady()) return local
   try {
     const snap = await getDoc(doc(db, 'config', 'custom'))
     if (snap.exists()) {
@@ -163,7 +243,7 @@ export async function loadCustomConfig() {
 export async function saveCustomConfig(cfg) {
   const payload = { ...JSON.parse(JSON.stringify(cfg || {})), updated_at: Date.now() }
   writeLocal(CONFIG_KEY, payload)
-  if (!db) return
+  if (!isCloudReady()) return
   try {
     await setDoc(doc(db, 'config', 'custom'), payload)
   } catch (err) {
@@ -215,7 +295,7 @@ export async function importBackup(data) {
 export async function loadLabs() {
   const local = readLocal(LABS_KEY)
   let merged = local
-  if (db) {
+  if (isCloudReady()) {
     try {
       const snap = await getDocs(collection(db, 'labs'))
       const remote = {}
@@ -233,7 +313,7 @@ export async function saveLab(lab) {
   const all = readLocal(LABS_KEY)
   all[lab.date] = lab
   writeLocal(LABS_KEY, all)
-  if (!db) return
+  if (!isCloudReady()) return
   try {
     await setDoc(doc(db, 'labs', lab.date), lab)
   } catch (err) {
