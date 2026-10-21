@@ -1,10 +1,19 @@
-// Gemini 2.5 Flash client using Structured Outputs (JSON Schema).
-// The API key is never hardcoded: it is read from user settings / env by the caller.
+// Gemini client using Structured Outputs (JSON Schema).
+// The API key and model ID are never hardcoded: they are read from user settings / env.
 import healthContext from '../../docs/health_context.md?raw'
 import { live, medLabel } from '../data/presets.js'
+import { loadSettings } from '../firebase.js'
 
-const MODEL = 'gemini-3.8-flash'
-const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash'
+export const GEMINI_MODEL_OPTIONS = ['gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+
+export function getGeminiModel() {
+  return (loadSettings().geminiModel || '').trim() || DEFAULT_GEMINI_MODEL
+}
+
+function geminiEndpoint(model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
+}
 
 const SYSTEM_INSTRUCTION = `You are GlucoSync, a clinical-nutrition assistant for ONE patient with poorly controlled type 2 diabetes, dyslipidemia and early albuminuria. Respond in Traditional Chinese (繁體中文, Taiwan usage) inside all string fields. Be concise and practical (Taiwan convenience stores, bento shops, home cooking).
 
@@ -21,6 +30,7 @@ ${healthContext}
 4. Renal / urine (UAcr 32.46, U-Specific Gravity 1.037, glycosuria): monitor sodium (aim < 2300 mg/day, ~< 800 mg/meal) and hydration (2000-2500 cc/day). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.
 5. Never give a diagnosis or change medication doses. For medication questions advise consulting the treating physician.
 6. Estimate nutrition honestly; when uncertain, give a reasonable estimate and say so in actionable_advice.
+7. Keep actionable_advice to at most 60 words (about 2 short Traditional Chinese sentences). No long paragraphs.
 
 === TRAFFIC LIGHT SCHEME ===
 Each alert has "level" in {green, yellow, red} and a short "message" (<= 40 Chinese characters):
@@ -109,10 +119,71 @@ const labEvalSchema = {
   ],
 }
 
+// ---------- HTTP helpers (retry + readable errors) ----------
+const RETRY_WAITS_MS = [1500, 3000] // up to 2 retries for 503 / 429
+const HTTP_HINT = {
+  429: '請求過於頻繁，請稍後再試',
+  500: 'Google 伺服器內部錯誤，請稍後再試',
+  503: 'Google 伺服器負載過高，請稍後再試',
+  401: 'API Key 無效或已過期，請至設定檢查',
+  403: 'API Key 無權限或配額不足，請至設定檢查',
+  404: '找不到此模型，請至設定更換模型名稱',
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+async function parseErrorBody(res) {
+  try {
+    const j = await res.json()
+    return j?.error?.message || ''
+  } catch {
+    try {
+      return (await res.text()).slice(0, 200)
+    } catch {
+      return ''
+    }
+  }
+}
+
+function formatHttpError(status, detail) {
+  const hint = HTTP_HINT[status] || 'Gemini API 呼叫失敗'
+  return detail ? `[HTTP ${status}] ${hint} — ${detail}` : `[HTTP ${status}] ${hint}`
+}
+
+/** fetch with exponential backoff on 503 / 429 (and network failures). */
+async function fetchWithRetry(url, init) {
+  let lastErr
+  for (let attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
+    let res
+    try {
+      res = await fetch(url, init)
+    } catch {
+      lastErr = new Error('網路連線失敗，請檢查網路後再試。')
+      if (attempt < RETRY_WAITS_MS.length) {
+        await sleep(RETRY_WAITS_MS[attempt])
+        continue
+      }
+      throw lastErr
+    }
+    if (res.ok) return res
+    const detail = await parseErrorBody(res)
+    lastErr = new Error(formatHttpError(res.status, detail))
+    if ((res.status === 503 || res.status === 429) && attempt < RETRY_WAITS_MS.length) {
+      await sleep(RETRY_WAITS_MS[attempt])
+      continue
+    }
+    throw lastErr
+  }
+  throw lastErr
+}
+
 // ---------- Core request ----------
 async function generate({ apiKey, parts, schema }) {
   if (!apiKey) throw new Error('尚未設定 Gemini API Key，請至右上角設定。')
-  const res = await fetch(ENDPOINT, {
+  const model = getGeminiModel()
+  const res = await fetchWithRetry(geminiEndpoint(model), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
@@ -125,15 +196,6 @@ async function generate({ apiKey, parts, schema }) {
       },
     }),
   })
-  if (!res.ok) {
-    let detail = ''
-    try {
-      detail = (await res.json())?.error?.message || ''
-    } catch {
-      /* ignore */
-    }
-    throw new Error(`Gemini API 錯誤 (${res.status}) ${detail}`.trim())
-  }
   const data = await res.json()
   const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('')
   if (!text) throw new Error('Gemini 未回傳內容 (可能被安全機制攔截)。')
