@@ -172,6 +172,7 @@ export function emptyDay(date) {
     date,
     hydration_cc: 0,
     exercise_min: 0,
+    exercise_logs: [], // 新增：運動明細陣列
     meds: {
       morning: { eutomin: false, forxiga: false, glitos: false, roty: false },
       evening: { eutomin: false },
