@@ -3,7 +3,7 @@
 import healthContext from '../../docs/health_context.md?raw'
 import { live, medLabel } from '../data/presets.js'
 
-const MODEL = 'gemini-2.5-flash'
+const MODEL = 'gemini-3.8-flash'
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
 
 const SYSTEM_INSTRUCTION = `You are GlucoSync, a clinical-nutrition assistant for ONE patient with poorly controlled type 2 diabetes, dyslipidemia and early albuminuria. Respond in Traditional Chinese (繁體中文, Taiwan usage) inside all string fields. Be concise and practical (Taiwan convenience stores, bento shops, home cooking).
