@@ -1,4 +1,4 @@
-// Default meal presets, modifier tags, medications and daily targets.
+// Default meal presets, modifier tags, exercise types, drink presets, medications and daily targets.
 // User customizations (stored under `glucosync.customConfig`) override these at runtime
 // through the reactive `live` store at the bottom of this file.
 import { reactive } from 'vue'
@@ -104,6 +104,23 @@ export const TAGS = [
   '[餐後踏步 20分]',
 ]
 
+export const EXERCISE_TYPES = [
+  '餐後踏步',
+  '戶外散步',
+  '慢跑/路跑',
+  '健身房跑步機',
+  '重訓/肌力',
+  '騎車',
+]
+
+export const DRINK_PRESETS = [
+  { id: 'drk-green-tea', name: '無糖綠茶/烏龍茶', default_cc: 500, counts_as_water: true },
+  { id: 'drk-black-coffee', name: '美式黑咖啡', default_cc: 350, counts_as_water: true },
+  { id: 'drk-sparkling', name: '無糖氣泡水', default_cc: 500, counts_as_water: true },
+  { id: 'drk-soy-milk', name: '無糖豆漿', default_cc: 400, counts_as_water: false },
+  { id: 'drk-almond-milk', name: '無糖杏仁飲', default_cc: 300, counts_as_water: false },
+]
+
 // timing: 'morning' | 'evening' | 'both'. `id` is the key used in day.meds[slot][id]
 // (kept identical to the original keys so existing logged data stays valid).
 export const MEDICATIONS = [
@@ -147,13 +164,15 @@ export const BASELINE_DATE = '2026-09-05'
 // that all components read from.
 // =====================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o))
-const SECTIONS = ['presets', 'tags', 'medications', 'targets']
+const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'drinkPresets', 'medications', 'targets']
 const TIMINGS = ['morning', 'evening', 'both']
 
 export const customConfig = reactive({})
 export const live = reactive({
   presets: clone(PRESETS),
   tags: clone(TAGS),
+  exerciseTypes: clone(EXERCISE_TYPES),
+  drinkPresets: clone(DRINK_PRESETS),
   medications: clone(MEDICATIONS),
   targets: { ...TARGETS },
 })
@@ -167,6 +186,8 @@ export function onCustomConfigChange(fn) {
 function recompute() {
   live.presets = clone(customConfig.presets ?? PRESETS)
   live.tags = clone(customConfig.tags ?? TAGS)
+  live.exerciseTypes = clone(customConfig.exerciseTypes ?? EXERCISE_TYPES)
+  live.drinkPresets = clone(customConfig.drinkPresets ?? DRINK_PRESETS)
   live.medications = clone(customConfig.medications ?? MEDICATIONS)
   live.targets = { ...TARGETS, ...(customConfig.targets ?? {}) }
 }
@@ -187,6 +208,21 @@ export function sanitizeCustomConfig(cfg) {
   }
   if (Array.isArray(cfg.tags)) {
     out.tags = [...new Set(cfg.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim()))]
+  }
+  if (Array.isArray(cfg.exerciseTypes)) {
+    out.exerciseTypes = [
+      ...new Set(cfg.exerciseTypes.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())),
+    ]
+  }
+  if (Array.isArray(cfg.drinkPresets)) {
+    out.drinkPresets = cfg.drinkPresets
+      .filter((d) => d && typeof d.name === 'string' && d.name.trim())
+      .map((d, i) => ({
+        id: String(d.id || `drk-${Date.now()}-${i}`),
+        name: d.name.trim(),
+        default_cc: Math.max(0, Number(d.default_cc) || 0),
+        counts_as_water: Boolean(d.counts_as_water),
+      }))
   }
   if (Array.isArray(cfg.medications)) {
     out.medications = cfg.medications
@@ -221,7 +257,7 @@ export function getCustomConfig() {
   return clone(customConfig)
 }
 
-/** Override one section ('presets' | 'tags' | 'medications' | 'targets'). */
+/** Override one section ('presets' | 'tags' | 'exerciseTypes' | 'drinkPresets' | 'medications' | 'targets'). */
 export function updateCustom(section, value) {
   if (!SECTIONS.includes(section)) return
   const clean = sanitizeCustomConfig({ [section]: value })[section]
