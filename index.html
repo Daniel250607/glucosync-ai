@@ -1928,7 +1928,9 @@
         var days = ref({});
         var labs = ref([]);
         var loaded = ref(false);
-        var today = todayKey();
+        var WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+        var today = computed(function () { return todayKey(); });
+        var selectedDate = ref(todayKey());
         var authUser = ref(null);
         var authBusy = ref(false);
         var authReady = ref(false);
@@ -1936,7 +1938,32 @@
         var firebaseConfigured = isFirebaseConfigured();
 
         var isAuthorized = computed(function () { return !!(authUser.value && isAuthorizedEmail(authUser.value.email)); });
-        var todayData = computed(function () { return days.value[today] || emptyDay(today); });
+        var currentDay = computed(function () { return days.value[selectedDate.value] || emptyDay(selectedDate.value); });
+        var isPastDate = computed(function () { return selectedDate.value !== today.value; });
+        var canGoNext = computed(function () { return selectedDate.value < today.value; });
+        function weekdayLabel(iso) {
+          var parts = String(iso || '').split('-').map(Number);
+          if (parts.length !== 3 || parts.some(function (n) { return !n; })) return '';
+          return WEEKDAYS[new Date(parts[0], parts[1] - 1, parts[2]).getDay()] || '';
+        }
+        var selectedWeekday = computed(function () { return weekdayLabel(selectedDate.value); });
+        function shiftIsoDate(iso, delta) {
+          var parts = String(iso || todayKey()).split('-').map(Number);
+          var dt = new Date(parts[0], parts[1] - 1, parts[2]);
+          dt.setDate(dt.getDate() + delta);
+          return todayKey(dt);
+        }
+        function clampSelectedDate() {
+          var cap = todayKey();
+          if (!selectedDate.value || selectedDate.value > cap) selectedDate.value = cap;
+        }
+        function prevDay() { selectedDate.value = shiftIsoDate(selectedDate.value, -1); }
+        function nextDay() {
+          if (!canGoNext.value) return;
+          selectedDate.value = shiftIsoDate(selectedDate.value, 1);
+          clampSelectedDate();
+        }
+        function resetToToday() { selectedDate.value = todayKey(); }
         var synced = computed(function () { return !!(isAuthorized.value && isCloudReady()); });
         var syncBadge = computed(function () { return synced.value ? '☁️ 已同步' : '💾 本機快取'; });
         var userInitials = computed(function () {
@@ -1960,6 +1987,7 @@
           labs.value = [];
           loaded.value = false;
           showSettings.value = false;
+          selectedDate.value = todayKey();
           destroyQrPairing(true);
           applyCustomConfig({});
         }
@@ -2366,7 +2394,9 @@
         });
 
         return {
-          tabs: tabs, tab: tab, days: days, labs: labs, loaded: loaded, today: today, todayData: todayData, backend: BACKEND,
+          tabs: tabs, tab: tab, days: days, labs: labs, loaded: loaded, today: today, selectedDate: selectedDate, currentDay: currentDay,
+          isPastDate: isPastDate, canGoNext: canGoNext, selectedWeekday: selectedWeekday,
+          prevDay: prevDay, nextDay: nextDay, resetToToday: resetToToday, clampSelectedDate: clampSelectedDate, backend: BACKEND,
           authUser: authUser, authBusy: authBusy, authReady: authReady, isAuthorized: isAuthorized, firebaseConfigured: firebaseConfigured,
           synced: synced, syncBadge: syncBadge, userInitials: userInitials,
           handleSignIn: handleSignIn, handleSignOut: handleSignOut,
@@ -2455,7 +2485,23 @@
   <main class="mx-auto max-w-4xl p-4">
     <p v-if="!loaded" class="py-10 text-center text-slate-400">載入中…</p>
     <template v-else>
-      <daily-tracker v-show="tab === 'daily'" :day="todayData" @update="updateDay" @open-settings="openSettings"></daily-tracker>
+      <div v-show="tab === 'daily'" class="space-y-4">
+        <section class="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
+          <div class="flex items-center gap-2">
+            <button type="button" class="shrink-0 rounded-xl bg-slate-100 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-200" @click="prevDay">◀ 前一天</button>
+            <div class="min-w-0 flex-1 text-center">
+              <input v-model="selectedDate" type="date" :max="today" class="w-full rounded-lg border border-slate-300 px-2 py-2 text-center text-base text-slate-800" @change="clampSelectedDate" />
+              <p class="mt-1 text-xs text-slate-500">{{ selectedDate }} ({{ selectedWeekday }})</p>
+            </div>
+            <button type="button" class="shrink-0 rounded-xl bg-slate-100 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-200 disabled:opacity-40" :disabled="!canGoNext" @click="nextDay">後一天 ▶</button>
+          </div>
+          <div v-if="isPastDate" class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
+            <p>⚠️ 正在補登 / 檢視：{{ selectedDate }}</p>
+            <button type="button" class="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200" @click="resetToToday">↩ 回到今天</button>
+          </div>
+        </section>
+        <daily-tracker :day="currentDay" @update="updateDay" @open-settings="openSettings"></daily-tracker>
+      </div>
       <trend-chart v-if="tab === 'trend'" :days="days"></trend-chart>
       <lab-milestones v-show="tab === 'labs'" :labs="labs" :days="days" @add-lab="addLab" @open-settings="openSettings"></lab-milestones>
     </template>
