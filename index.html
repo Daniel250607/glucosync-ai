@@ -13,6 +13,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 
   <style>
     html, body { -webkit-tap-highlight-color: transparent; }
@@ -222,6 +223,9 @@
     var DAYS_KEY = 'glucosync.days';
     var LABS_KEY = 'glucosync.labs';
     var CONFIG_KEY = 'glucosync.customConfig';
+    var USED_NONCES_KEY = 'glucosync.usedNonces';
+    var PENDING_QR_PAIR_KEY = 'glucosync.pendingQrPair';
+    var QR_PAIR_TTL_MS = 5 * 60 * 1000;
 
     function readJSON(key, fallback) {
       try { var v = JSON.parse(localStorage.getItem(key)); return v == null ? fallback : v; }
@@ -323,6 +327,94 @@
         }
         callback(user || null, { ready: true, denied: false });
       });
+    }
+
+    function bytesToBase64(bytes) {
+      var bin = '', arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), i;
+      for (i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+      return btoa(bin);
+    }
+    function base64ToBytes(b64) {
+      var bin = atob(String(b64 || '')), out = new Uint8Array(bin.length), i;
+      for (i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    function randomHex(byteLen) {
+      var buf = new Uint8Array(byteLen || 16);
+      crypto.getRandomValues(buf);
+      return Array.prototype.map.call(buf, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+    }
+    function randomBytes(byteLen) {
+      var buf = new Uint8Array(byteLen || 16);
+      crypto.getRandomValues(buf);
+      return buf;
+    }
+    async function encryptJson(obj, keyBytes) {
+      var iv = crypto.getRandomValues(new Uint8Array(12));
+      var key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+      var ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+      return { ciphertext: bytesToBase64(new Uint8Array(ct)), iv: bytesToBase64(iv) };
+    }
+    async function decryptJson(ciphertext, iv, keyBytes) {
+      var key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+      var pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, base64ToBytes(ciphertext));
+      return JSON.parse(new TextDecoder().decode(pt));
+    }
+    function pairingDocId(token) { return 'qr_pairing_' + token; }
+    function pairingRef(token) { return db ? db.collection('config').doc(pairingDocId(token)) : null; }
+    function getStoredFirebaseConfig() { return parseFirebaseConfig(loadSettings().firebaseConfig); }
+    function applyPairedSettings(opts) {
+      opts = opts || {};
+      var prev = loadSettings();
+      var fbText = prev.firebaseConfig || '';
+      if (opts.firebaseConfig != null) fbText = typeof opts.firebaseConfig === 'string' ? opts.firebaseConfig : JSON.stringify(opts.firebaseConfig);
+      saveSettings(Object.assign({}, prev, {
+        geminiApiKey: opts.geminiKey != null ? String(opts.geminiKey) : (prev.geminiApiKey || ''),
+        geminiModel: String(opts.geminiModel || '').trim() || prev.geminiModel || '',
+        thinkingBudget: opts.thinkingBudget != null ? opts.thinkingBudget : prev.thinkingBudget,
+        firebaseConfig: fbText
+      }));
+    }
+    function ensureFirebaseFromSettings() {
+      if (db && auth) return true;
+      try {
+        var fbCfg = parseFirebaseConfig(loadSettings().firebaseConfig);
+        if (fbCfg && fbCfg.projectId && window.firebase) {
+          var fbApp = firebase.apps && firebase.apps.length ? firebase.app() : firebase.initializeApp(fbCfg);
+          db = fbApp.firestore();
+          if (firebase.auth) auth = fbApp.auth();
+          BACKEND = db ? 'firestore' : 'localStorage';
+          return !!(db && auth);
+        }
+      } catch (err) { console.warn('[GlucoSync] Late Firebase init failed.', err); }
+      return false;
+    }
+    async function writeQrPairing(token, record) {
+      if (!isCloudReady()) throw new Error('雲端配對需要已登入的 Firebase。');
+      await pairingRef(token).set(record);
+    }
+    async function readQrPairing(token) {
+      if (!db) throw new Error('尚未設定 Firebase。');
+      var snap = await pairingRef(token).get();
+      return snap.exists ? snap.data() : null;
+    }
+    async function deleteQrPairing(token) {
+      if (!db || !token) return;
+      try { await pairingRef(token).delete(); } catch (err) { console.warn('[GlucoSync] pairing delete failed.', err); }
+    }
+    function watchQrPairing(token, onChange) {
+      if (!db || !token) return function () {};
+      return pairingRef(token).onSnapshot(function (snap) { onChange(snap.exists ? snap.data() : null); });
+    }
+    function readNonceList() {
+      try { var v = JSON.parse(localStorage.getItem(USED_NONCES_KEY)); return Array.isArray(v) ? v : []; }
+      catch (e) { return []; }
+    }
+    function nonceWasUsed(n) { return readNonceList().indexOf(n) >= 0; }
+    function markNonceUsed(n) {
+      var arr = readNonceList();
+      arr.push(n);
+      writeJSON(USED_NONCES_KEY, arr.slice(-80));
     }
 
     function todayKey(d) {
@@ -1868,10 +1960,13 @@
           labs.value = [];
           loaded.value = false;
           showSettings.value = false;
+          destroyQrPairing(true);
           applyCustomConfig({});
         }
 
         onMounted(function () {
+          ingestQrPairHash();
+          pendingPairBanner.value = !!readPendingPair();
           onAuthStateChanged(async function (user, meta) {
             authReady.value = true;
             if (meta && meta.denied) showToast('⛔ 存取被拒：此帳號未獲授權');
@@ -1879,6 +1974,7 @@
               authUser.value = user;
               await hydrateFromStorage();
               loaded.value = true;
+              await consumePendingCloudPair();
               return;
             }
             lockApp();
@@ -1896,10 +1992,15 @@
         }
 
         var showSettings = ref(false);
+        var settingsTab = ref('system');
+        var showApiKey = ref(false);
+        var pendingPairBanner = ref(false);
         var settings = reactive({ geminiApiKey: '', firebaseConfig: '', geminiModel: DEFAULT_GEMINI_MODEL, thinkingBudget: DEFAULT_THINKING_BUDGET });
         var settingsError = ref('');
         var dataMsg = ref('');
         var dataMsgOk = ref(true);
+        var qrPair = reactive({ active: false, busy: false, mode: '', token: '', svg: '', remainSec: 0 });
+        var qrTimer = null, qrUnsub = null, qrSelfDestroy = false;
 
         var toast = ref('');
         var toastTimer = null;
@@ -1986,7 +2087,9 @@
           return '';
         }
 
-        function openSettings() {
+        function openSettings(initialTab) {
+          settingsTab.value = initialTab === 'targets' ? 'targets' : 'system';
+          showApiKey.value = false;
           var s = loadSettings();
           settings.geminiApiKey = s.geminiApiKey || '';
           settings.firebaseConfig = s.firebaseConfig || '';
@@ -1995,6 +2098,10 @@
           settingsError.value = ''; dataMsg.value = '';
           loadDraft();
           showSettings.value = true;
+        }
+        function closeSettings() {
+          destroyQrPairing(true);
+          showSettings.value = false;
         }
 
         function thinkingLevelHint() {
@@ -2030,7 +2137,7 @@
           Object.keys(draft.targets).forEach(function (k) { nums[k] = Number(draft.targets[k]); });
           if (JSON.stringify(nums) !== JSON.stringify(live.targets)) updateCustom('targets', nums);
           if (JSON.stringify(draft.medications) !== JSON.stringify(live.medications)) updateCustom('medications', draft.medications);
-          showSettings.value = false;
+          closeSettings();
           if ((prev.firebaseConfig || '') !== text) location.reload();
         }
 
@@ -2079,6 +2186,185 @@
           }
         }
 
+        function readPendingPair() {
+          try { return JSON.parse(sessionStorage.getItem(PENDING_QR_PAIR_KEY) || 'null'); }
+          catch (e) { return null; }
+        }
+        function writePendingPair(payload) {
+          if (!payload) sessionStorage.removeItem(PENDING_QR_PAIR_KEY);
+          else sessionStorage.setItem(PENDING_QR_PAIR_KEY, JSON.stringify(payload));
+          pendingPairBanner.value = !!payload;
+        }
+        function stripLocationHash() {
+          try { history.replaceState(null, '', location.pathname + location.search); }
+          catch (e) { location.hash = ''; }
+        }
+        function parseQrPairHash() {
+          var h = String(location.hash || '');
+          if (h.indexOf('#qrpair=') !== 0) return null;
+          try { return JSON.parse(atob(decodeURIComponent(h.slice('#qrpair='.length)))); }
+          catch (e) { return null; }
+        }
+        function buildPairingUrl(payload) {
+          var encoded = encodeURIComponent(btoa(JSON.stringify(payload)));
+          var base = location.protocol === 'file:'
+            ? String(location.href || '').split('#')[0]
+            : (location.origin + location.pathname);
+          return base + '#qrpair=' + encoded;
+        }
+        function loadQrLib() {
+          if (window.qrcode) return Promise.resolve(window.qrcode);
+          return new Promise(function (resolve, reject) {
+            var s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+            s.onload = function () { window.qrcode ? resolve(window.qrcode) : reject(new Error('QR 函式庫載入失敗')); };
+            s.onerror = function () { reject(new Error('無法載入 QR 函式庫')); };
+            document.head.appendChild(s);
+          });
+        }
+        function renderQrSvg(text) {
+          var qr = window.qrcode(0, 'M');
+          qr.addData(text);
+          qr.make();
+          return qr.createSvgTag({ scalable: true, margin: 2 });
+        }
+        function persistPairFirebase(fb) {
+          if (!fb) return false;
+          var prev = loadSettings();
+          var text = typeof fb === 'string' ? fb : JSON.stringify(fb);
+          if (!parseFirebaseConfig(text)) return false;
+          saveSettings(Object.assign({}, prev, { firebaseConfig: text }));
+          return !isFirebaseConfigured();
+        }
+        function ingestQrPairHash() {
+          var payload = parseQrPairHash();
+          if (!payload) { pendingPairBanner.value = !!readPendingPair(); return; }
+          stripLocationHash();
+          if (payload.m === 'local') { consumeLocalPair(payload); return; }
+          if (payload.m === 'cloud' && payload.t && payload.k) {
+            var needsReload = persistPairFirebase(payload.fb);
+            writePendingPair({ t: payload.t, k: payload.k });
+            if (needsReload) { location.reload(); return; }
+            ensureFirebaseFromSettings();
+            pendingPairBanner.value = true;
+          }
+        }
+        function consumeLocalPair(payload) {
+          if (!payload || Date.now() >= Number(payload.exp) || !payload.n || nonceWasUsed(payload.n)) {
+            showToast('⛔ 此 QR Code 已失效或已被使用過');
+            return false;
+          }
+          applyPairedSettings({
+            geminiKey: payload.gk, geminiModel: payload.gm,
+            thinkingBudget: normalizeThinkingBudget(payload.tb), firebaseConfig: payload.fb
+          });
+          markNonceUsed(payload.n);
+          var s = loadSettings();
+          settings.geminiApiKey = s.geminiApiKey || '';
+          settings.firebaseConfig = s.firebaseConfig || '';
+          settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL;
+          settings.thinkingBudget = normalizeThinkingBudget(s.thinkingBudget);
+          showToast('🎉 手機配對完成！');
+          if (payload.fb && !isFirebaseConfigured()) location.reload();
+          return true;
+        }
+        async function consumePendingCloudPair() {
+          var pending = readPendingPair();
+          if (!pending || !pending.t || !pending.k) return;
+          try {
+            ensureFirebaseFromSettings();
+            var rec = await readQrPairing(pending.t);
+            if (!rec || Date.now() >= Number(rec.expiresAt)) {
+              if (rec) await deleteQrPairing(pending.t);
+              writePendingPair(null);
+              showToast('⛔ 此 QR Code 已失效或已被使用過');
+              return;
+            }
+            var data = await decryptJson(rec.ciphertext, rec.iv, base64ToBytes(pending.k));
+            applyPairedSettings({
+              geminiKey: data.geminiKey, geminiModel: data.geminiModel,
+              thinkingBudget: normalizeThinkingBudget(data.thinkingBudget)
+            });
+            await deleteQrPairing(pending.t);
+            writePendingPair(null);
+            var s = loadSettings();
+            settings.geminiApiKey = s.geminiApiKey || '';
+            settings.firebaseConfig = s.firebaseConfig || '';
+            settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL;
+            settings.thinkingBudget = normalizeThinkingBudget(s.thinkingBudget);
+            showToast('🎉 手機配對完成！金鑰與設定已成功匯入，QR Code 已銷毀失效');
+          } catch (err) { showToast(err.message || String(err)); }
+        }
+        function clearQrView() {
+          if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
+          if (qrUnsub) { qrUnsub(); qrUnsub = null; }
+          qrPair.active = false; qrPair.busy = false; qrPair.mode = ''; qrPair.token = ''; qrPair.svg = ''; qrPair.remainSec = 0;
+        }
+        async function destroyQrPairing(silent) {
+          var token = qrPair.token, mode = qrPair.mode;
+          qrSelfDestroy = true;
+          if (mode === 'cloud' && token) await deleteQrPairing(token);
+          clearQrView();
+          qrSelfDestroy = false;
+          if (!silent && mode) showToast('此 QR Code 已銷毀失效');
+        }
+        function startQrCountdown() {
+          if (qrTimer) clearInterval(qrTimer);
+          qrTimer = setInterval(function () {
+            qrPair.remainSec -= 1;
+            if (qrPair.remainSec <= 0) destroyQrPairing(true);
+          }, 1000);
+        }
+        async function generateQrPairing() {
+          await destroyQrPairing(true);
+          qrPair.busy = true;
+          try {
+            var fbObj = parseFirebaseConfig(settings.firebaseConfig) || getStoredFirebaseConfig();
+            var expiresAt = Date.now() + QR_PAIR_TTL_MS, payload;
+            if (isCloudReady() && window.crypto && crypto.subtle) {
+              var token = randomHex(16);
+              var keyBytes = randomBytes(16);
+              var enc = await encryptJson({
+                geminiKey: settings.geminiApiKey.trim(),
+                geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+                thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget)
+              }, keyBytes);
+              await writeQrPairing(token, { ciphertext: enc.ciphertext, iv: enc.iv, createdAt: Date.now(), expiresAt: expiresAt });
+              payload = { m: 'cloud', t: token, k: bytesToBase64(keyBytes), fb: fbObj || undefined };
+              qrPair.mode = 'cloud'; qrPair.token = token;
+              var sawDoc = false;
+              qrUnsub = watchQrPairing(token, function (data) {
+                if (data) { sawDoc = true; return; }
+                if (!sawDoc || qrSelfDestroy) return;
+                clearQrView();
+                showToast('✅ 手機配對成功，此 QR Code 已自動銷毀失效！');
+              });
+            } else {
+              var n = randomHex(16);
+              payload = {
+                m: 'local', n: n, exp: expiresAt,
+                gk: settings.geminiApiKey.trim(),
+                gm: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+                tb: normalizeThinkingBudget(settings.thinkingBudget),
+                fb: fbObj || undefined
+              };
+              qrPair.mode = 'local'; qrPair.token = n;
+            }
+            await loadQrLib();
+            qrPair.svg = renderQrSvg(buildPairingUrl(payload));
+            qrPair.active = true;
+            qrPair.remainSec = Math.floor(QR_PAIR_TTL_MS / 1000);
+            startQrCountdown();
+          } catch (err) {
+            await destroyQrPairing(true);
+            showToast(err.message || String(err));
+          } finally { qrPair.busy = false; }
+        }
+        var qrCountdownLabel = computed(function () {
+          var s = Math.max(0, Number(qrPair.remainSec) || 0);
+          return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+        });
+
         return {
           tabs: tabs, tab: tab, days: days, labs: labs, loaded: loaded, today: today, todayData: todayData, backend: BACKEND,
           authUser: authUser, authBusy: authBusy, authReady: authReady, isAuthorized: isAuthorized, firebaseConfigured: firebaseConfigured,
@@ -2086,8 +2372,10 @@
           handleSignIn: handleSignIn, handleSignOut: handleSignOut,
           showFirebaseSetup: showFirebaseSetup, openFirebaseSetup: openFirebaseSetup, submitFirebaseSetup: submitFirebaseSetup,
           updateDay: updateDay, addLab: addLab,
-          showSettings: showSettings, settings: settings, settingsError: settingsError, openSettings: openSettings, submitSettings: submitSettings,
+          showSettings: showSettings, settingsTab: settingsTab, showApiKey: showApiKey, pendingPairBanner: pendingPairBanner,
+          settings: settings, settingsError: settingsError, openSettings: openSettings, closeSettings: closeSettings, submitSettings: submitSettings,
           exportData: exportData, importData: importData, dataMsg: dataMsg, dataMsgOk: dataMsgOk,
+          qrPair: qrPair, qrCountdownLabel: qrCountdownLabel, generateQrPairing: generateQrPairing, destroyQrPairing: destroyQrPairing,
           draft: draft, TARGET_FIELDS: TARGET_FIELDS, addDraftMed: addDraftMed, removeDraftMed: removeDraftMed,
           resetTargetsAndMeds: resetTargetsAndMeds,
           toast: toast, dismissToast: dismissToast,
@@ -2113,6 +2401,9 @@
     <div class="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-slate-200">
       <h1 class="text-xl font-bold text-slate-800">GlucoSync｜個人代謝與健康管理系統</h1>
       <p class="mt-3 text-sm text-slate-500">此系統僅限授權帳號存取，請登入以檢視紀錄</p>
+      <p v-if="pendingPairBanner" class="mt-4 rounded-xl bg-teal-50 px-3 py-2.5 text-left text-sm text-teal-800 ring-1 ring-teal-200">
+        📱 偵測到手機配對請求，請點擊下方 Google 登入以解密金鑰並完成設定配對
+      </p>
       <button class="mt-8 w-full rounded-xl bg-teal-700 py-3.5 text-base font-semibold text-white active:bg-teal-800 disabled:opacity-60"
         :disabled="authBusy" @click="handleSignIn">🔑 使用 Google 帳號登入</button>
       <button class="mt-4 text-xs text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline" @click="openFirebaseSetup">
@@ -2178,13 +2469,23 @@
   </nav>
 
   <!-- Settings modal -->
-  <div v-if="isAuthorized && showSettings" class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center" @click.self="showSettings = false">
+  <div v-if="isAuthorized && showSettings" class="fixed inset-0 z-30 flex items-end bg-black/40 sm:items-center sm:justify-center" @click.self="closeSettings">
     <div class="max-h-[90vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 sm:max-w-lg sm:rounded-2xl">
       <h2 class="text-lg font-semibold text-slate-800">設定</h2>
       <p class="mt-1 text-xs text-slate-500">金鑰僅儲存於此瀏覽器的 localStorage，不會寫入程式碼。</p>
+      <div class="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+        <button type="button" class="rounded-lg px-2 py-2 text-xs font-medium sm:text-sm"
+          :class="settingsTab === 'system' ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-500'" @click="settingsTab = 'system'">🔌 系統與 AI 設定</button>
+        <button type="button" class="rounded-lg px-2 py-2 text-xs font-medium sm:text-sm"
+          :class="settingsTab === 'targets' ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-500'" @click="settingsTab = 'targets'">🎯 個人目標與用藥調整</button>
+      </div>
 
+      <div v-show="settingsTab === 'system'">
       <label class="mt-4 block text-sm font-medium text-slate-700">Gemini API Key
-        <input v-model="settings.geminiApiKey" type="password" autocomplete="off" placeholder="AIza..." class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base" />
+        <div class="mt-1 flex gap-2">
+          <input v-model="settings.geminiApiKey" :type="showApiKey ? 'text' : 'password'" autocomplete="off" placeholder="AIza..." class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2.5 text-base" />
+          <button type="button" class="shrink-0 rounded-lg bg-slate-100 px-3 text-xs text-slate-600" @click="showApiKey = !showApiKey">{{ showApiKey ? '隱藏' : '顯示' }}</button>
+        </div>
       </label>
 
       <label class="mt-4 block text-sm font-medium text-slate-700">Gemini 模型名稱 (Model ID)
@@ -2211,17 +2512,39 @@
           class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-xs"></textarea>
       </label>
 
-      <hr class="my-5 border-slate-200" />
-      <h3 class="text-sm font-semibold text-slate-800">🎯 個人目標與用藥調整</h3>
-      <p class="mt-1 text-xs text-slate-500">回診後可直接在此調整每日目標與用藥，儲存後「今日記錄」與「趨勢」圖會立即套用。</p>
+      <div class="mt-5 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+        <p class="text-sm font-medium text-slate-800">📱 產生手機配對動態 QR Code</p>
+        <p class="mt-1 text-xs text-slate-500">掃碼一次即匯入金鑰與設定，配對後 QR 立即銷毀。有效時間 5 分鐘。</p>
+        <button type="button" class="mt-3 w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+          :disabled="qrPair.busy" @click="generateQrPairing">{{ qrPair.active ? '重新產生 QR Code' : '📱 產生手機配對動態 QR Code' }}</button>
+        <div v-if="qrPair.active" class="mt-3 text-center">
+          <div class="mx-auto max-w-[220px] overflow-hidden rounded-xl bg-white p-2 ring-1 ring-slate-200" v-html="qrPair.svg"></div>
+          <p class="mt-2 text-sm font-semibold text-slate-700">剩餘 {{ qrCountdownLabel }}</p>
+          <p class="text-xs text-slate-400">{{ qrPair.mode === 'cloud' ? '雲端單次銷毀模式' : '離線時效 / 單次 nonce 模式' }}</p>
+          <button type="button" class="mt-2 text-sm text-rose-600" @click="destroyQrPairing(false)">✕ 立即銷毀 QR Code</button>
+        </div>
+      </div>
 
+      <hr class="my-5 border-slate-200" />
+      <h3 class="text-sm font-semibold text-slate-800">資料備份 / 轉移 (電腦 ⇄ 手機)</h3>
+      <p class="mt-1 text-xs text-slate-500">匯出每日記錄、檢驗結果與自訂快選/標籤/目標/用藥為 JSON 檔 (不含 API Key 與 Firebase 設定)；匯入時會與現有資料合併，同日期以匯入檔為準，自訂設定則整組還原。</p>
+      <div class="mt-3 grid grid-cols-2 gap-3">
+        <button class="rounded-xl bg-slate-100 py-3 text-slate-700 active:bg-slate-200" @click="exportData">⬇️ 匯出 JSON</button>
+        <label class="cursor-pointer rounded-xl bg-slate-100 py-3 text-center text-slate-700 active:bg-slate-200">⬆️ 匯入 JSON
+          <input type="file" accept="application/json,.json" class="hidden" @change="importData" />
+        </label>
+      </div>
+      <p v-if="dataMsg" class="mt-2 text-sm" :class="dataMsgOk ? 'text-emerald-700' : 'text-rose-600'">{{ dataMsg }}</p>
+      </div>
+
+      <div v-show="settingsTab === 'targets'">
+      <p class="mt-4 text-xs text-slate-500">回診後可直接在此調整每日目標與用藥，儲存後「今日記錄」與「趨勢」圖會立即套用。</p>
       <div class="mt-3 grid grid-cols-2 gap-3">
         <label v-for="f in TARGET_FIELDS" :key="f.key" class="text-xs text-slate-500">{{ f.label }}
           <input v-model="draft.targets[f.key]" type="number" min="0" step="any" inputmode="decimal" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
         </label>
       </div>
       <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水 2000-2500cc、運動 20 分。</p>
-
       <p class="mt-4 text-sm font-medium text-slate-700">用藥清單</p>
       <div class="mt-2 space-y-2">
         <div v-for="(m, i) in draft.medications" :key="m.id" class="space-y-1.5 rounded-lg bg-slate-50 p-2.5 ring-1 ring-slate-200">
@@ -2241,24 +2564,13 @@
       </div>
       <button class="mt-2 w-full rounded-lg bg-slate-100 py-2.5 text-sm text-slate-700 active:bg-slate-200" @click="addDraftMed">＋ 新增藥物</button>
       <button class="mt-2 w-full rounded-lg py-2 text-sm text-rose-600 active:bg-rose-50" @click="resetTargetsAndMeds">↩︎ 恢復預設目標與用藥</button>
+      </div>
 
       <p v-if="settingsError" class="mt-3 rounded-lg bg-rose-50 p-2 text-sm text-rose-600">{{ settingsError }}</p>
-
       <div class="mt-5 grid grid-cols-2 gap-3">
-        <button class="rounded-xl bg-slate-100 py-3 text-slate-700" @click="showSettings = false">取消</button>
+        <button class="rounded-xl bg-slate-100 py-3 text-slate-700" @click="closeSettings">取消</button>
         <button class="rounded-xl bg-teal-700 py-3 font-semibold text-white" @click="submitSettings">儲存</button>
       </div>
-
-      <hr class="my-5 border-slate-200" />
-      <h3 class="text-sm font-semibold text-slate-800">資料備份 / 轉移 (電腦 ⇄ 手機)</h3>
-      <p class="mt-1 text-xs text-slate-500">匯出每日記錄、檢驗結果與自訂快選/標籤/目標/用藥為 JSON 檔 (不含 API Key 與 Firebase 設定)；匯入時會與現有資料合併，同日期以匯入檔為準，自訂設定則整組還原。</p>
-      <div class="mt-3 grid grid-cols-2 gap-3">
-        <button class="rounded-xl bg-slate-100 py-3 text-slate-700 active:bg-slate-200" @click="exportData">⬇️ 匯出 JSON</button>
-        <label class="cursor-pointer rounded-xl bg-slate-100 py-3 text-center text-slate-700 active:bg-slate-200">⬆️ 匯入 JSON
-          <input type="file" accept="application/json,.json" class="hidden" @change="importData" />
-        </label>
-      </div>
-      <p v-if="dataMsg" class="mt-2 text-sm" :class="dataMsgOk ? 'text-emerald-700' : 'text-rose-600'">{{ dataMsg }}</p>
     </div>
   </div>
   </div>
