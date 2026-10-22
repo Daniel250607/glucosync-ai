@@ -655,10 +655,25 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <div class="flex items-start justify-between gap-2">
         <div>
-          <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
+          <div class="flex items-center gap-2">
+            <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
+            <label class="flex items-center text-xs text-slate-500">
+              ⚖️ 體重
+              <input
+                type="number"
+                min="20"
+                max="250"
+                step="0.5"
+                inputmode="decimal"
+                v-model.lazy="live.targets.userWeight"
+                @change="updateCustom('targets', live.targets)"
+                class="mx-1 w-14 rounded border border-slate-300 bg-slate-50 p-0.5 text-center text-xs text-slate-800 focus:bg-white"
+              />
+              kg
+            </label>
+          </div>
           <p class="mt-0.5 text-xs" :class="hydrationReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
             有效水分 {{ effectiveWaterCc }} / {{ TARGETS.hydrationMin }}-{{ TARGETS.hydrationMax }} cc
-            <span class="font-normal text-slate-400">（{{ TARGETS.userWeight }} kg）</span>
           </p>
           <p class="mt-0.5 text-xs text-slate-500">
             總液體 {{ totalFluidCc }} cc · 純水 {{ pureWaterCc }} cc · 飲品 {{ drinksTotalCc }} cc
