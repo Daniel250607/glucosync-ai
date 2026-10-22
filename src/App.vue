@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import DailyTracker from './components/DailyTracker.vue'
 import TrendChart from './components/TrendChart.vue'
 import LabMilestones from './components/LabMilestones.vue'
@@ -46,6 +46,7 @@ import {
   TARGETS,
   applyCustomConfig,
   getCustomConfig,
+  hydrationRangeFromWeight,
   live,
   onCustomConfigChange,
   resetCustom,
@@ -181,7 +182,8 @@ async function addLab(lab) {
 
 function applyProposedTargets(targets) {
   if (!targets) return
-  updateCustom('targets', targets)
+  const merged = { ...live.targets, ...targets }
+  updateCustom('targets', { ...merged, ...hydrationRangeFromWeight(merged.userWeight) })
   if (showSettings.value) loadDraft()
   showToast('已套用建議目標至設定')
 }
@@ -297,10 +299,20 @@ const TARGET_FIELDS = [
   { label: '碳水 最高 (g)', key: 'carbsMax' },
   { label: '飽和脂肪 警示 (g)', key: 'satFatMin' },
   { label: '飽和脂肪 上限 (g)', key: 'satFatMax' },
-  { label: '飲水 下限 (cc)', key: 'hydrationMin' },
-  { label: '飲水 上限 (cc)', key: 'hydrationMax' },
+  { label: '體重 (kg)', key: 'userWeight' },
+  { label: '飲水 下限 (cc)', key: 'hydrationMin', readonly: true },
+  { label: '飲水 上限 (cc)', key: 'hydrationMax', readonly: true },
   { label: '運動目標 (分)', key: 'exerciseTarget' },
 ]
+
+watch(
+  () => Number(draft.targets.userWeight),
+  (w) => {
+    const range = hydrationRangeFromWeight(w)
+    draft.targets.hydrationMin = range.hydrationMin
+    draft.targets.hydrationMax = range.hydrationMax
+  },
+)
 
 function loadDraft() {
   draft.targets = { ...live.targets }
@@ -349,6 +361,7 @@ function validateDraft() {
   }
   if (Number(t.carbsMin) > Number(t.carbsMax)) return '碳水最低值不可大於最高值。'
   if (Number(t.satFatMin) > Number(t.satFatMax)) return '飽和脂肪警示值不可大於上限。'
+  if (!(Number(t.userWeight) > 0)) return '體重必須大於 0 kg。'
   if (Number(t.hydrationMin) > Number(t.hydrationMax)) return '飲水下限不可大於上限。'
   if (draft.medications.some((m) => !m.name.trim())) return '藥物名稱不可空白 (不需要的請刪除)。'
   return ''
@@ -1020,11 +1033,13 @@ const qrCountdownLabel = computed(() => {
               min="0"
               step="any"
               inputmode="decimal"
+              :readonly="f.readonly"
               class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800"
+              :class="f.readonly ? 'bg-slate-50 text-slate-600' : ''"
             />
           </label>
         </div>
-        <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水 2000-2500cc、運動 20 分。</p>
+        <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。</p>
 
         <p class="mt-4 text-sm font-medium text-slate-700">用藥清單</p>
         <div class="mt-2 space-y-2">

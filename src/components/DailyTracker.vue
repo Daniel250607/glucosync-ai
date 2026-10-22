@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
-import { analyzeMeal, summarizeDay } from '../services/gemini.js'
+import { analyzeHydrationSchedule, analyzeMeal, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
 
 const props = defineProps({
@@ -23,11 +23,38 @@ function nowTime() {
 
 // ---------- hydration & drinks ----------
 const TARGETS = computed(() => live.targets)
-const hydrationPct = computed(() =>
-  Math.min(100, Math.round(((props.day.hydration_cc || 0) / (TARGETS.value.hydrationMax || 1)) * 100)),
+const drinks = computed(() => props.day.drinks || [])
+const drinksTotalCc = computed(() => drinks.value.reduce((sum, d) => sum + (Number(d.volume_cc) || 0), 0))
+const drinkWaterCc = computed(() =>
+  drinks.value.reduce((sum, d) => sum + (d.counts_as_water ? Number(d.volume_cc) || 0 : 0), 0),
 )
+const effectiveWaterCc = computed(() => Math.max(0, Number(props.day.hydration_cc) || 0))
+const pureWaterCc = computed(() => Math.max(0, effectiveWaterCc.value - drinkWaterCc.value))
+const totalFluidCc = computed(() => pureWaterCc.value + drinksTotalCc.value)
 const hydrationMinPct = computed(() => (TARGETS.value.hydrationMin / (TARGETS.value.hydrationMax || 1)) * 100)
-const hydrationReached = computed(() => (props.day.hydration_cc || 0) >= TARGETS.value.hydrationMin)
+const hydrationReached = computed(() => effectiveWaterCc.value >= TARGETS.value.hydrationMin)
+const hydrationBar = computed(() => {
+  const max = TARGETS.value.hydrationMax || 1
+  const pure = pureWaterCc.value
+  const drink = drinkWaterCc.value
+  const sum = pure + drink
+  const cap = Math.min(sum, max)
+  const purePart = sum > 0 ? (pure / sum) * cap : 0
+  return {
+    purePct: (purePart / max) * 100,
+    drinkPct: ((cap - purePart) / max) * 100,
+  }
+})
+
+const HYDRATION_PATTERN = {
+  'front-loaded': '偏前段',
+  'back-loaded': '偏後段',
+  optimal: '分配適當',
+}
+const hydrationAdvice = ref('')
+const hydrationPattern = ref('')
+const hydrationAdviceLoading = ref(false)
+const hydrationAdviceError = ref('')
 
 function addWater(cc) {
   commit((d) => {
@@ -46,6 +73,35 @@ function logCustomWater() {
     return
   }
   addWater(cc)
+}
+
+async function askHydrationSchedule() {
+  hydrationAdviceError.value = ''
+  const apiKey = getGeminiKey()
+  if (!apiKey) {
+    hydrationAdviceError.value = '尚未設定 Gemini API Key。'
+    emit('open-settings')
+    return
+  }
+  hydrationAdviceLoading.value = true
+  try {
+    const res = await analyzeHydrationSchedule({
+      apiKey,
+      currentWater: effectiveWaterCc.value,
+      targetMin: TARGETS.value.hydrationMin,
+      targetMax: TARGETS.value.hydrationMax,
+      drinks: drinks.value,
+      currentTime: nowTime(),
+    })
+    hydrationPattern.value = HYDRATION_PATTERN[res.pattern] || ''
+    hydrationAdvice.value = String(res.advice || '').trim()
+  } catch (err) {
+    hydrationAdvice.value = ''
+    hydrationPattern.value = ''
+    hydrationAdviceError.value = err.message || String(err)
+  } finally {
+    hydrationAdviceLoading.value = false
+  }
 }
 
 const drinkForm = reactive({ name: '', volume_cc: 350, counts_as_water: true, note: '' })
@@ -601,7 +657,11 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         <div>
           <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
           <p class="mt-0.5 text-xs" :class="hydrationReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
-            今日純水分累計：{{ day.hydration_cc || 0 }} / {{ TARGETS.hydrationMin }}-{{ TARGETS.hydrationMax }} cc
+            有效水分 {{ effectiveWaterCc }} / {{ TARGETS.hydrationMin }}-{{ TARGETS.hydrationMax }} cc
+            <span class="font-normal text-slate-400">（{{ TARGETS.userWeight }} kg）</span>
+          </p>
+          <p class="mt-0.5 text-xs text-slate-500">
+            總液體 {{ totalFluidCc }} cc · 純水 {{ pureWaterCc }} cc · 飲品 {{ drinksTotalCc }} cc
           </p>
         </div>
         <button
@@ -614,13 +674,18 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       </div>
 
       <div class="relative mt-3 h-4 overflow-hidden rounded-full bg-slate-100">
+        <div class="absolute inset-y-0 left-0 bg-sky-500" :style="{ width: hydrationBar.purePct + '%' }" />
         <div
-          class="h-full rounded-full transition-all"
-          :class="hydrationReached ? 'bg-emerald-500' : 'bg-sky-500'"
-          :style="{ width: hydrationPct + '%' }"
+          class="absolute inset-y-0 bg-teal-400"
+          :style="{ left: hydrationBar.purePct + '%', width: hydrationBar.drinkPct + '%' }"
         />
         <div class="absolute inset-y-0 w-0.5 bg-slate-400/70" :style="{ left: hydrationMinPct + '%' }" />
       </div>
+      <p class="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-400">
+        <span class="inline-flex items-center gap-1"><span class="inline-block size-2 rounded-sm bg-sky-500" />純水</span>
+        <span class="inline-flex items-center gap-1"><span class="inline-block size-2 rounded-sm bg-teal-400" />計水飲品</span>
+        <span>灰線為下限</span>
+      </p>
 
       <div class="mt-3 space-y-2">
         <div class="flex gap-2">
@@ -648,6 +713,21 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <button type="button" class="rounded-xl bg-slate-100 py-2.5 text-sm text-slate-600 active:bg-slate-200" @click="addWater(-100)">−100cc</button>
         </div>
         <p v-if="waterError" class="text-xs text-rose-600">{{ waterError }}</p>
+      </div>
+
+      <div class="mt-3">
+        <button
+          type="button"
+          class="w-full rounded-xl bg-amber-50 py-2.5 text-sm font-medium text-amber-900 ring-1 ring-amber-200 active:bg-amber-100 disabled:opacity-60"
+          :disabled="hydrationAdviceLoading"
+          @click="askHydrationSchedule"
+        >
+          {{ hydrationAdviceLoading ? '分析中…' : '💡 AI 飲水分配建議' }}
+        </button>
+        <p v-if="hydrationAdviceError" class="mt-1 text-xs text-rose-600">{{ hydrationAdviceError }}</p>
+        <p v-if="hydrationAdvice" class="mt-2 rounded-lg bg-amber-50 p-2.5 text-sm leading-relaxed text-amber-950">
+          <span v-if="hydrationPattern" class="mr-1 font-semibold">{{ hydrationPattern }}。</span>{{ hydrationAdvice }}
+        </p>
       </div>
 
       <!-- Drink logging normal mode -->

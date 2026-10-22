@@ -351,6 +351,39 @@ export function clampProposedTargets(raw, current = {}) {
  * Evaluate lab milestones against baseline, follow-up labs, and recent intake.
  * `recentDays` should be the logged days inside the recent 30-day window.
  */
+const hydrationScheduleSchema = {
+  type: 'OBJECT',
+  properties: {
+    pattern: { type: 'STRING', enum: ['front-loaded', 'back-loaded', 'optimal'] },
+    advice: { type: 'STRING' },
+  },
+  required: ['pattern', 'advice'],
+}
+
+/**
+ * Ask Gemini how to spread the remaining hydration across the rest of the day.
+ * `advice` is Traditional Chinese and should stay within about 60 words.
+ */
+export async function analyzeHydrationSchedule({ apiKey, currentWater, targetMin, targetMax, drinks, currentTime }) {
+  const list = (Array.isArray(drinks) ? drinks : []).map((d) => ({
+    time: d.time || '',
+    name: d.name || '',
+    volume_cc: Number(d.volume_cc) || 0,
+    counts_as_water: Boolean(d.counts_as_water),
+  }))
+  const text = [
+    'Advise how this patient should distribute the remaining hydration across the rest of today.',
+    `Current local time: ${currentTime || 'unknown'}.`,
+    `Effective hydration so far (pure water plus drinks that count as water): ${Number(currentWater) || 0} cc.`,
+    `Weight-based target range: ${targetMin}-${targetMax} cc. The lower bound is at least 2000 cc because the patient takes an SGLT-2 inhibitor ([REDACTED]). Do not suggest dropping below 2000 cc.`,
+    `Logged drinks today: ${JSON.stringify(list)}.`,
+    'Judge whether intake so far is front-loaded (most volume already in the morning), back-loaded (little so far and the clock is late), or optimal.',
+    'advice: Traditional Chinese, at most 60 words, covering exactly three stages — morning boost, afternoon steady, and evening taper before sleep. Mention remaining cc if still under the minimum. No diagnosis and no medication changes.',
+    'pattern must be one of front-loaded, back-loaded, optimal.',
+  ].join('\n')
+  return generate({ apiKey, parts: [{ text }], schema: hydrationScheduleSchema })
+}
+
 export async function evaluateLabs({ apiKey, labs, recentDays }) {
   const intake = averageIntake(recentDays)
   const text = [
