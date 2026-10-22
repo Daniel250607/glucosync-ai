@@ -9,12 +9,15 @@ import {
   signInWithPopup,
   signOut,
 } from 'firebase/auth'
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore'
+import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc } from 'firebase/firestore'
 
 const SETTINGS_KEY = 'glucosync.settings'
 const DAYS_KEY = 'glucosync.days'
 const LABS_KEY = 'glucosync.labs'
 const CONFIG_KEY = 'glucosync.customConfig'
+const USED_NONCES_KEY = 'glucosync.usedNonces'
+export const PENDING_QR_PAIR_KEY = 'glucosync.pendingQrPair'
+export const QR_PAIR_TTL_MS = 5 * 60 * 1000
 
 export const ALLOWED_EMAIL = 'daniel.chang.hy@gmail.com'
 export const ACCESS_DENIED_MESSAGE = '⛔ 存取被拒：此帳號未獲授權'
@@ -324,5 +327,137 @@ export async function saveLab(lab) {
     await setDoc(doc(db, 'labs', lab.date), lab)
   } catch (err) {
     console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err)
+  }
+}
+
+// ---------- One-time QR pairing ----------
+export function bytesToBase64(bytes) {
+  let bin = ''
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i])
+  return btoa(bin)
+}
+
+export function base64ToBytes(b64) {
+  const bin = atob(String(b64 || ''))
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+export function randomHex(byteLen = 16) {
+  const buf = new Uint8Array(byteLen)
+  crypto.getRandomValues(buf)
+  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+export function randomBytes(byteLen = 16) {
+  const buf = new Uint8Array(byteLen)
+  crypto.getRandomValues(buf)
+  return buf
+}
+
+export function pairingDocId(token) {
+  return `qr_pairing_${token}`
+}
+
+export async function encryptJson(obj, keyBytes) {
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt'])
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(JSON.stringify(obj)),
+  )
+  return { ciphertext: bytesToBase64(new Uint8Array(ct)), iv: bytesToBase64(iv) }
+}
+
+export async function decryptJson(ciphertext, iv, keyBytes) {
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt'])
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(iv) },
+    key,
+    base64ToBytes(ciphertext),
+  )
+  return JSON.parse(new TextDecoder().decode(pt))
+}
+
+export function getStoredFirebaseConfig() {
+  return parseFirebaseConfig(loadSettings().firebaseConfig)
+}
+
+export function applyPairedSettings({ geminiKey, geminiModel, thinkingBudget, firebaseConfig } = {}) {
+  const prev = loadSettings()
+  let fbText = prev.firebaseConfig || ''
+  if (firebaseConfig != null) {
+    fbText = typeof firebaseConfig === 'string' ? firebaseConfig : JSON.stringify(firebaseConfig)
+  }
+  saveSettings({
+    ...prev,
+    geminiApiKey: geminiKey != null ? String(geminiKey) : prev.geminiApiKey || '',
+    geminiModel: String(geminiModel || '').trim() || prev.geminiModel || '',
+    thinkingBudget: thinkingBudget != null ? thinkingBudget : prev.thinkingBudget,
+    firebaseConfig: fbText,
+  })
+}
+
+export function ensureFirebaseFromSettings() {
+  if (db && auth) return true
+  try {
+    const cfg = resolveFirebaseConfig()
+    if (!cfg) return false
+    const app = initializeApp(cfg)
+    db = getFirestore(app)
+    auth = getAuth(app)
+    return !!(db && auth)
+  } catch (err) {
+    console.warn('[GlucoSync] Late Firebase init failed.', err)
+    return false
+  }
+}
+
+export async function writeQrPairing(token, record) {
+  if (!isCloudReady()) throw new Error('雲端配對需要已登入的 Firebase。')
+  await setDoc(doc(db, 'config', pairingDocId(token)), record)
+}
+
+export async function readQrPairing(token) {
+  if (!db) throw new Error('尚未設定 Firebase。')
+  const snap = await getDoc(doc(db, 'config', pairingDocId(token)))
+  return snap.exists() ? snap.data() : null
+}
+
+export async function deleteQrPairing(token) {
+  if (!db || !token) return
+  try {
+    await deleteDoc(doc(db, 'config', pairingDocId(token)))
+  } catch (err) {
+    console.warn('[GlucoSync] pairing delete failed.', err)
+  }
+}
+
+export function watchQrPairing(token, onChange) {
+  if (!db || !token) return () => {}
+  return onSnapshot(doc(db, 'config', pairingDocId(token)), (snap) => {
+    onChange(snap.exists() ? snap.data() : null)
+  })
+}
+
+export function nonceWasUsed(n) {
+  return readList(USED_NONCES_KEY).includes(n)
+}
+
+export function markNonceUsed(n) {
+  const arr = readList(USED_NONCES_KEY)
+  arr.push(n)
+  writeLocal(USED_NONCES_KEY, arr.slice(-80))
+}
+
+function readList(key) {
+  try {
+    const v = JSON.parse(localStorage.getItem(key))
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
   }
 }
