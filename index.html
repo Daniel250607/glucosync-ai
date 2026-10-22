@@ -36,7 +36,8 @@
      * 1. DATA  (from src/data/presets.js)
      * ===================================================================== */
     var TARGETS = {
-      hydrationMin: 2000, hydrationMax: 2500,
+      userWeight: 70,
+      hydrationMin: 2100, hydrationMax: 2660,
       exerciseTarget: 20,
       satFatMin: 15, satFatMax: 20,
       carbsMin: 100, carbsMax: 180
@@ -116,13 +117,22 @@
     var changeListener = null;
     function onCustomConfigChange(fn) { changeListener = fn; }
 
+    function hydrationRangeFromWeight(weightKg) {
+      var w = Number(weightKg);
+      var weight = isFinite(w) && w > 0 ? w : 70;
+      var hydrationMin = Math.max(2000, Math.round(weight * 30));
+      var hydrationMax = Math.max(hydrationMin + 400, Math.round(weight * 38));
+      return { userWeight: weight, hydrationMin: hydrationMin, hydrationMax: hydrationMax };
+    }
+
     function recompute() {
       live.presets = deepCopy(customConfig.presets != null ? customConfig.presets : PRESETS);
       live.tags = deepCopy(customConfig.tags != null ? customConfig.tags : TAGS);
       live.exerciseTypes = deepCopy(customConfig.exerciseTypes != null ? customConfig.exerciseTypes : EXERCISE_TYPES);
       live.drinkPresets = deepCopy(customConfig.drinkPresets != null ? customConfig.drinkPresets : DRINK_PRESETS);
       live.medications = deepCopy(customConfig.medications != null ? customConfig.medications : MEDICATIONS);
-      live.targets = Object.assign({}, TARGETS, customConfig.targets || {});
+      var merged = Object.assign({}, TARGETS, customConfig.targets || {});
+      live.targets = Object.assign({}, merged, hydrationRangeFromWeight(merged.userWeight));
     }
 
     function sanitizeCustomConfig(cfg) {
@@ -817,6 +827,37 @@
       return generate(opts.apiKey, [{ text: text }], labEvalSchema);
     }
 
+    var hydrationScheduleSchema = {
+      type: 'OBJECT',
+      properties: {
+        pattern: { type: 'STRING', enum: ['front-loaded', 'back-loaded', 'optimal'] },
+        advice: { type: 'STRING' }
+      },
+      required: ['pattern', 'advice']
+    };
+
+    function analyzeHydrationSchedule(opts) {
+      var list = (Array.isArray(opts.drinks) ? opts.drinks : []).map(function (d) {
+        return {
+          time: d.time || '',
+          name: d.name || '',
+          volume_cc: Number(d.volume_cc) || 0,
+          counts_as_water: Boolean(d.counts_as_water)
+        };
+      });
+      var text = [
+        'Advise how this patient should distribute the remaining hydration across the rest of today.',
+        'Current local time: ' + (opts.currentTime || 'unknown') + '.',
+        'Effective hydration so far (pure water plus drinks that count as water): ' + (Number(opts.currentWater) || 0) + ' cc.',
+        'Weight-based target range: ' + opts.targetMin + '-' + opts.targetMax + ' cc. The lower bound is at least 2000 cc because the patient takes an SGLT-2 inhibitor (Forxiga). Do not suggest dropping below 2000 cc.',
+        'Logged drinks today: ' + JSON.stringify(list) + '.',
+        'Judge whether intake so far is front-loaded (most volume already in the morning), back-loaded (little so far and the clock is late), or optimal.',
+        'advice: Traditional Chinese, at most 60 words, covering exactly three stages — morning boost, afternoon steady, and evening taper before sleep. Mention remaining cc if still under the minimum. No diagnosis and no medication changes.',
+        'pattern must be one of front-loaded, back-loaded, optimal.'
+      ].join('\n');
+      return generate(opts.apiKey, [{ text: text }], hydrationScheduleSchema);
+    }
+
     function summarizeDay(day) {
       var exLogs = Array.isArray(day.exercise_logs) ? day.exercise_logs : [];
       var computedExMin = exLogs.length
@@ -891,11 +932,34 @@
 
         // hydration & drinks
         var targets = computed(function () { return live.targets; });
-        var hydrationPct = computed(function () {
-          return Math.min(100, Math.round(((props.day.hydration_cc || 0) / (targets.value.hydrationMax || 1)) * 100));
+        var drinks = computed(function () { return props.day.drinks || []; });
+        var drinksTotalCc = computed(function () {
+          return drinks.value.reduce(function (sum, d) { return sum + (Number(d.volume_cc) || 0); }, 0);
         });
+        var drinkWaterCc = computed(function () {
+          return drinks.value.reduce(function (sum, d) {
+            return sum + (d.counts_as_water ? (Number(d.volume_cc) || 0) : 0);
+          }, 0);
+        });
+        var effectiveWaterCc = computed(function () { return Math.max(0, Number(props.day.hydration_cc) || 0); });
+        var pureWaterCc = computed(function () { return Math.max(0, effectiveWaterCc.value - drinkWaterCc.value); });
+        var totalFluidCc = computed(function () { return pureWaterCc.value + drinksTotalCc.value; });
         var hydrationMinPct = computed(function () { return (targets.value.hydrationMin / (targets.value.hydrationMax || 1)) * 100; });
-        var hydrationReached = computed(function () { return (props.day.hydration_cc || 0) >= targets.value.hydrationMin; });
+        var hydrationReached = computed(function () { return effectiveWaterCc.value >= targets.value.hydrationMin; });
+        var hydrationBar = computed(function () {
+          var max = targets.value.hydrationMax || 1;
+          var pure = pureWaterCc.value;
+          var drink = drinkWaterCc.value;
+          var sum = pure + drink;
+          var cap = Math.min(sum, max);
+          var purePart = sum > 0 ? (pure / sum) * cap : 0;
+          return { purePct: (purePart / max) * 100, drinkPct: ((cap - purePart) / max) * 100 };
+        });
+        var HYDRATION_PATTERN = { 'front-loaded': '偏前段', 'back-loaded': '偏後段', optimal: '分配適當' };
+        var hydrationAdvice = ref('');
+        var hydrationPattern = ref('');
+        var hydrationAdviceLoading = ref(false);
+        var hydrationAdviceError = ref('');
         function addWater(cc) { commit(function (d) { d.hydration_cc = Math.max(0, (d.hydration_cc || 0) + cc); }); }
         var waterInputCc = ref(300);
         var waterError = ref('');
@@ -907,6 +971,33 @@
             return;
           }
           addWater(cc);
+        }
+        function askHydrationSchedule() {
+          hydrationAdviceError.value = '';
+          var apiKey = getGeminiKey();
+          if (!apiKey) {
+            hydrationAdviceError.value = '尚未設定 Gemini API Key。';
+            ctx.emit('open-settings');
+            return;
+          }
+          hydrationAdviceLoading.value = true;
+          analyzeHydrationSchedule({
+            apiKey: apiKey,
+            currentWater: effectiveWaterCc.value,
+            targetMin: targets.value.hydrationMin,
+            targetMax: targets.value.hydrationMax,
+            drinks: drinks.value,
+            currentTime: nowTime()
+          }).then(function (res) {
+            hydrationPattern.value = HYDRATION_PATTERN[res.pattern] || '';
+            hydrationAdvice.value = String(res.advice || '').trim();
+          }).catch(function (err) {
+            hydrationAdvice.value = '';
+            hydrationPattern.value = '';
+            hydrationAdviceError.value = err.message || String(err);
+          }).then(function () {
+            hydrationAdviceLoading.value = false;
+          });
         }
 
         var drinkForm = reactive({ name: '', volume_cc: 350, counts_as_water: true, note: '' });
@@ -1367,8 +1458,11 @@
           onPresetEdit: onPresetEdit, deletePreset: deletePreset, addPreset: addPreset, deleteTag: deleteTag, addTag: addTag,
           resetMenu: resetMenu, saveAsPreset: saveAsPreset,
           LEVEL_STYLE: LEVEL_STYLE, DOT_STYLE: DOT_STYLE, LEVEL_TEXT: LEVEL_TEXT,
-          hydrationPct: hydrationPct, hydrationMinPct: hydrationMinPct, hydrationReached: hydrationReached, addWater: addWater,
+          hydrationMinPct: hydrationMinPct, hydrationReached: hydrationReached, hydrationBar: hydrationBar, addWater: addWater,
           waterInputCc: waterInputCc, waterError: waterError, logCustomWater: logCustomWater,
+          pureWaterCc: pureWaterCc, drinksTotalCc: drinksTotalCc, effectiveWaterCc: effectiveWaterCc, totalFluidCc: totalFluidCc,
+          hydrationAdvice: hydrationAdvice, hydrationPattern: hydrationPattern, hydrationAdviceLoading: hydrationAdviceLoading,
+          hydrationAdviceError: hydrationAdviceError, askHydrationSchedule: askHydrationSchedule,
           drinkForm: drinkForm, drinkEditMode: drinkEditMode, drinkManageError: drinkManageError, newDrinkPreset: newDrinkPreset,
           applyDrinkPreset: applyDrinkPreset, addDrinkLog: addDrinkLog, removeDrinkLog: removeDrinkLog,
           onDrinkPresetEdit: onDrinkPresetEdit, addDrinkPreset: addDrinkPreset, deleteDrinkPreset: deleteDrinkPreset, resetDrinkPresets: resetDrinkPresets,
@@ -1392,8 +1486,10 @@
       <div>
         <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
         <p class="mt-0.5 text-xs" :class="hydrationReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
-          今日純水分累計：{{ day.hydration_cc || 0 }} / {{ TARGETS.hydrationMin }}-{{ TARGETS.hydrationMax }} cc
+          有效水分 {{ effectiveWaterCc }} / {{ TARGETS.hydrationMin }}-{{ TARGETS.hydrationMax }} cc
+          <span class="font-normal text-slate-400">（{{ TARGETS.userWeight }} kg）</span>
         </p>
+        <p class="mt-0.5 text-xs text-slate-500">總液體 {{ totalFluidCc }} cc · 純水 {{ pureWaterCc }} cc · 飲品 {{ drinksTotalCc }} cc</p>
       </div>
       <button class="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium"
         :class="drinkEditMode ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 active:bg-slate-200'"
@@ -1401,9 +1497,15 @@
     </div>
 
     <div class="relative mt-3 h-4 overflow-hidden rounded-full bg-slate-100">
-      <div class="h-full rounded-full transition-all" :class="hydrationReached ? 'bg-emerald-500' : 'bg-sky-500'" :style="{ width: hydrationPct + '%' }"></div>
+      <div class="absolute inset-y-0 left-0 bg-sky-500" :style="{ width: hydrationBar.purePct + '%' }"></div>
+      <div class="absolute inset-y-0 bg-teal-400" :style="{ left: hydrationBar.purePct + '%', width: hydrationBar.drinkPct + '%' }"></div>
       <div class="absolute inset-y-0 w-0.5 bg-slate-400/70" :style="{ left: hydrationMinPct + '%' }"></div>
     </div>
+    <p class="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-400">
+      <span class="inline-flex items-center gap-1"><span class="inline-block size-2 rounded-sm bg-sky-500"></span>純水</span>
+      <span class="inline-flex items-center gap-1"><span class="inline-block size-2 rounded-sm bg-teal-400"></span>計水飲品</span>
+      <span>灰線為下限</span>
+    </p>
 
     <div class="mt-3 space-y-2">
       <div class="flex gap-2">
@@ -1418,6 +1520,15 @@
         <button type="button" class="rounded-xl bg-slate-100 py-2.5 text-sm text-slate-600 active:bg-slate-200" @click="addWater(-100)">−100cc</button>
       </div>
       <p v-if="waterError" class="text-xs text-rose-600">{{ waterError }}</p>
+    </div>
+
+    <div class="mt-3">
+      <button type="button" class="w-full rounded-xl bg-amber-50 py-2.5 text-sm font-medium text-amber-900 ring-1 ring-amber-200 active:bg-amber-100 disabled:opacity-60"
+        :disabled="hydrationAdviceLoading" @click="askHydrationSchedule">{{ hydrationAdviceLoading ? '分析中…' : '💡 AI 飲水分配建議' }}</button>
+      <p v-if="hydrationAdviceError" class="mt-1 text-xs text-rose-600">{{ hydrationAdviceError }}</p>
+      <p v-if="hydrationAdvice" class="mt-2 rounded-lg bg-amber-50 p-2.5 text-sm leading-relaxed text-amber-950">
+        <span v-if="hydrationPattern" class="mr-1 font-semibold">{{ hydrationPattern }}。</span>{{ hydrationAdvice }}
+      </p>
     </div>
 
     <div v-if="!drinkEditMode" class="mt-4 border-t border-slate-100 pt-3">
@@ -2329,7 +2440,8 @@
         }
         function applyProposedTargets(targets) {
           if (!targets) return;
-          updateCustom('targets', targets);
+          var merged = Object.assign({}, live.targets, targets);
+          updateCustom('targets', Object.assign({}, merged, hydrationRangeFromWeight(merged.userWeight)));
           if (showSettings.value) loadDraft();
           showToast('已套用建議目標至設定');
         }
@@ -2400,10 +2512,16 @@
           { label: '碳水 最高 (g)', key: 'carbsMax' },
           { label: '飽和脂肪 警示 (g)', key: 'satFatMin' },
           { label: '飽和脂肪 上限 (g)', key: 'satFatMax' },
-          { label: '飲水 下限 (cc)', key: 'hydrationMin' },
-          { label: '飲水 上限 (cc)', key: 'hydrationMax' },
+          { label: '體重 (kg)', key: 'userWeight' },
+          { label: '飲水 下限 (cc)', key: 'hydrationMin', readonly: true },
+          { label: '飲水 上限 (cc)', key: 'hydrationMax', readonly: true },
           { label: '運動目標 (分)', key: 'exerciseTarget' }
         ];
+        watch(function () { return Number(draft.targets.userWeight); }, function (w) {
+          var range = hydrationRangeFromWeight(w);
+          draft.targets.hydrationMin = range.hydrationMin;
+          draft.targets.hydrationMax = range.hydrationMax;
+        });
 
         function loadDraft() {
           draft.targets = Object.assign({}, live.targets);
@@ -2425,6 +2543,7 @@
           }
           if (Number(t.carbsMin) > Number(t.carbsMax)) return '碳水最低值不可大於最高值。';
           if (Number(t.satFatMin) > Number(t.satFatMax)) return '飽和脂肪警示值不可大於上限。';
+          if (!(Number(t.userWeight) > 0)) return '體重必須大於 0 kg。';
           if (Number(t.hydrationMin) > Number(t.hydrationMax)) return '飲水下限不可大於上限。';
           if (draft.medications.some(function (m) { return !m.name.trim(); })) return '藥物名稱不可空白 (不需要的請刪除)。';
           return '';
@@ -2902,10 +3021,12 @@
       <p class="mt-4 text-xs text-slate-500">回診後可直接在此調整每日目標與用藥，儲存後「今日記錄」與「趨勢」圖會立即套用。</p>
       <div class="mt-3 grid grid-cols-2 gap-3">
         <label v-for="f in TARGET_FIELDS" :key="f.key" class="text-xs text-slate-500">{{ f.label }}
-          <input v-model="draft.targets[f.key]" type="number" min="0" step="any" inputmode="decimal" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          <input v-model="draft.targets[f.key]" type="number" min="0" step="any" inputmode="decimal" :readonly="f.readonly"
+            class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800"
+            :class="f.readonly ? 'bg-slate-50 text-slate-600' : ''" />
         </label>
       </div>
-      <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水 2000-2500cc、運動 20 分。</p>
+      <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。</p>
       <p class="mt-4 text-sm font-medium text-slate-700">用藥清單</p>
       <div class="mt-2 space-y-2">
         <div v-for="(m, i) in draft.medications" :key="m.id" class="space-y-1.5 rounded-lg bg-slate-50 p-2.5 ring-1 ring-slate-200">

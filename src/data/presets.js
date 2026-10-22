@@ -4,8 +4,10 @@
 import { reactive } from 'vue'
 
 export const TARGETS = {
-  hydrationMin: 2000,
-  hydrationMax: 2500,
+  // Body weight (kg) drives the hydration band. 70 kg → 2100–2660 cc.
+  userWeight: 70,
+  hydrationMin: 2100,
+  hydrationMax: 2660,
   // Post-dinner marching-in-place target duration (min).
   exerciseTarget: 20,
   // Saturated fat warning / strict limit (g/day) for LDL-C control.
@@ -184,13 +186,26 @@ export function onCustomConfigChange(fn) {
   changeListener = fn
 }
 
+/**
+ * Weight-based hydration band. Lower bound never drops below 2000 cc (SGLT-2).
+ * Upper bound is weight × 38 cc, and always at least 400 cc above the minimum.
+ */
+export function hydrationRangeFromWeight(weightKg) {
+  const w = Number(weightKg)
+  const weight = Number.isFinite(w) && w > 0 ? w : 70
+  const hydrationMin = Math.max(2000, Math.round(weight * 30))
+  const hydrationMax = Math.max(hydrationMin + 400, Math.round(weight * 38))
+  return { userWeight: weight, hydrationMin, hydrationMax }
+}
+
 function recompute() {
   live.presets = clone(customConfig.presets ?? PRESETS)
   live.tags = clone(customConfig.tags ?? TAGS)
   live.exerciseTypes = clone(customConfig.exerciseTypes ?? EXERCISE_TYPES)
   live.drinkPresets = clone(customConfig.drinkPresets ?? DRINK_PRESETS)
   live.medications = clone(customConfig.medications ?? MEDICATIONS)
-  live.targets = { ...TARGETS, ...(customConfig.targets ?? {}) }
+  const merged = { ...TARGETS, ...(customConfig.targets ?? {}) }
+  live.targets = { ...merged, ...hydrationRangeFromWeight(merged.userWeight) }
 }
 
 /** Validate untrusted config (from storage / import); returns only valid sections. */
