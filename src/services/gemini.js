@@ -188,25 +188,54 @@ function formatHttpError(status, detail) {
 /** fetch with exponential backoff on 503 / 429 (and network failures). */
 async function fetchWithRetry(url, init) {
   let lastErr
-  for (let attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
+  // 針對 503 這種卡死型錯誤，我們只允許重試一次，總嘗試次數改為 2 次
+  const maxAttempts = 2
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let res
+    // 加入 15 秒 AbortController 強制中斷
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15000)
+    const fetchInit = Object.assign({}, init, { signal: controller.signal })
+
     try {
-      res = await fetch(url, init)
-    } catch {
-      lastErr = new Error('網路連線失敗，請檢查網路後再試。')
-      if (attempt < RETRY_WAITS_MS.length) {
-        await sleep(RETRY_WAITS_MS[attempt])
+      res = await fetch(url, fetchInit)
+      clearTimeout(timeoutId)
+    } catch (e) {
+      clearTimeout(timeoutId)
+      // 如果是被 15 秒強制卡斷的
+      if (e.name === 'AbortError') {
+        lastErr = new Error('[HTTP 504] 伺服器回應逾時 (超過 15 秒)，Google 運算負載過高，請稍後再試或點擊「只記錄」。')
+      } else {
+        lastErr = new Error('網路連線失敗，請檢查網路後再試。')
+      }
+      // 如果還有重試額度，等 1.5 秒再試
+      if (attempt < maxAttempts - 1) {
+        await sleep(1500)
         continue
       }
       throw lastErr
     }
+
     if (res.ok) return res
+
     const detail = await parseErrorBody(res)
     lastErr = new Error(formatHttpError(res.status, detail))
-    if ((res.status === 503 || res.status === 429) && attempt < RETRY_WAITS_MS.length) {
-      await sleep(RETRY_WAITS_MS[attempt])
+
+    // 遇到 503：若還有額度就重試一次；如果已經是最後一次，立刻拋出友善錯誤，不要空等
+    if (res.status === 503) {
+      if (attempt < maxAttempts - 1) {
+        await sleep(1500)
+        continue
+      }
+      throw new Error('[HTTP 503] Google 伺服器目前繁忙，已自動為您保留輸入內容，請稍後再試或點擊「只記錄」。')
+    }
+
+    // 遇到 429 配額限制，也只套用 1 次重試
+    if (res.status === 429 && attempt < maxAttempts - 1) {
+      await sleep(2000)
       continue
     }
+
     throw lastErr
   }
   throw lastErr

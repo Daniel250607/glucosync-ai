@@ -669,20 +669,48 @@
     }
     async function fetchWithRetry(url, init) {
       var lastErr;
-      for (var attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
+      var maxAttempts = 2;
+      for (var attempt = 0; attempt < maxAttempts; attempt++) {
         var res;
-        try { res = await fetch(url, init); }
-        catch (e) {
-          lastErr = new Error('網路連線失敗，請檢查網路後再試。');
-          if (attempt < RETRY_WAITS_MS.length) { await sleep(RETRY_WAITS_MS[attempt]); continue; }
+        var controller = new AbortController();
+        var timeoutId = setTimeout(function () { controller.abort(); }, 15000);
+        var fetchInit = Object.assign({}, init, { signal: controller.signal });
+
+        try {
+          res = await fetch(url, fetchInit);
+          clearTimeout(timeoutId);
+        } catch (e) {
+          clearTimeout(timeoutId);
+          if (e.name === 'AbortError') {
+            lastErr = new Error('[HTTP 504] 伺服器回應逾時 (超過 15 秒)，Google 運算負載過高，請稍後再試或點擊「只記錄」。');
+          } else {
+            lastErr = new Error('網路連線失敗，請檢查網路後再試。');
+          }
+          if (attempt < maxAttempts - 1) {
+            await sleep(1500);
+            continue;
+          }
           throw lastErr;
         }
+
         if (res.ok) return res;
-        lastErr = new Error(formatHttpError(res.status, await parseErrorBody(res)));
-        if ((res.status === 503 || res.status === 429) && attempt < RETRY_WAITS_MS.length) {
-          await sleep(RETRY_WAITS_MS[attempt]);
+
+        var detail = await parseErrorBody(res);
+        lastErr = new Error(formatHttpError(res.status, detail));
+
+        if (res.status === 503) {
+          if (attempt < maxAttempts - 1) {
+            await sleep(1500);
+            continue;
+          }
+          throw new Error('[HTTP 503] Google 伺服器目前繁忙，已自動為您保留輸入內容，請稍後再試或點擊「只記錄」。');
+        }
+
+        if (res.status === 429 && attempt < maxAttempts - 1) {
+          await sleep(2000);
           continue;
         }
+
         throw lastErr;
       }
       throw lastErr;
@@ -1480,14 +1508,22 @@
       },
       template: `
 <div class="space-y-4">
-  <!-- Hydration & Drinks -->
+ <!-- Hydration & Drinks -->
   <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
     <div class="flex items-start justify-between gap-2">
       <div>
-        <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
+        <div class="flex items-center gap-2">
+          <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
+          <label class="flex items-center text-xs text-slate-500">
+            ⚖️ 體重
+            <input type="number" min="20" max="250" step="0.5" inputmode="decimal"
+              v-model.lazy="live.targets.userWeight" @change="updateCustom('targets', live.targets)"
+              class="mx-1 w-14 rounded border border-slate-300 bg-slate-50 p-0.5 text-center text-xs text-slate-800 focus:bg-white" />
+            kg
+          </label>
+        </div>
         <p class="mt-0.5 text-xs" :class="hydrationReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
           有效水分 {{ effectiveWaterCc }} / {{ TARGETS.hydrationMin }}-{{ TARGETS.hydrationMax }} cc
-          <span class="font-normal text-slate-400">（{{ TARGETS.userWeight }} kg）</span>
         </p>
         <p class="mt-0.5 text-xs text-slate-500">總液體 {{ totalFluidCc }} cc · 純水 {{ pureWaterCc }} cc · 飲品 {{ drinksTotalCc }} cc</p>
       </div>
