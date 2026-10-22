@@ -390,11 +390,18 @@ export function summarizeDay(day) {
     sodium_mg: 0,
     hydration_cc: day.hydration_cc || 0,
     exercise_min: computedExMin,
-    exercise_logs: exLogs.map((e) => ({
-      type: e.type,
-      duration_min: e.duration_min,
-      note: e.note || '',
-    })),
+    exercise_logs: exLogs.map((e) => {
+      const reps = Number(e.reps) || 0
+      const isReps = e.mode === 'reps' || reps > 0
+      return {
+        type: e.type,
+        mode: isReps ? 'reps' : 'duration',
+        duration_min: Number(e.duration_min) || 0,
+        reps: isReps ? reps : 0,
+        sets: isReps ? Math.max(1, Number(e.sets) || 1) : 0,
+        note: e.note || '',
+      }
+    }),
     drinks: (day.drinks || []).map((d) => ({
       name: d.name,
       volume_cc: d.volume_cc,

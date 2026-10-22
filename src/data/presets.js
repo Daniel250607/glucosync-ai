@@ -106,6 +106,7 @@ export const TAGS = [
 
 export const EXERCISE_TYPES = [
   '餐後踏步',
+  '抬腳跟',
   '戶外散步',
   '慢跑/路跑',
   '健身房跑步機',
