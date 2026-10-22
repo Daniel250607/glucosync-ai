@@ -66,10 +66,12 @@ const tabs = [
 ]
 const tab = ref('daily')
 
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const days = ref({})
 const labs = ref([])
 const loaded = ref(false)
-const today = todayKey()
+const today = computed(() => todayKey())
+const selectedDate = ref(todayKey())
 const authUser = ref(null)
 const authBusy = ref(false)
 const authReady = ref(false)
@@ -77,7 +79,42 @@ const showFirebaseSetup = ref(false)
 const firebaseConfigured = isFirebaseConfigured()
 
 const isAuthorized = computed(() => !!(authUser.value && isAuthorizedEmail(authUser.value.email)))
-const todayData = computed(() => days.value[today] || emptyDay(today))
+const currentDay = computed(() => days.value[selectedDate.value] || emptyDay(selectedDate.value))
+const isPastDate = computed(() => selectedDate.value !== today.value)
+const canGoNext = computed(() => selectedDate.value < today.value)
+const selectedWeekday = computed(() => weekdayLabel(selectedDate.value))
+
+function weekdayLabel(iso) {
+  const parts = String(iso || '').split('-').map(Number)
+  if (parts.length !== 3 || parts.some((n) => !n)) return ''
+  return WEEKDAYS[new Date(parts[0], parts[1] - 1, parts[2]).getDay()] || ''
+}
+
+function shiftIsoDate(iso, delta) {
+  const parts = String(iso || todayKey()).split('-').map(Number)
+  const dt = new Date(parts[0], parts[1] - 1, parts[2])
+  dt.setDate(dt.getDate() + delta)
+  return todayKey(dt)
+}
+
+function clampSelectedDate() {
+  const cap = todayKey()
+  if (!selectedDate.value || selectedDate.value > cap) selectedDate.value = cap
+}
+
+function prevDay() {
+  selectedDate.value = shiftIsoDate(selectedDate.value, -1)
+}
+
+function nextDay() {
+  if (!canGoNext.value) return
+  selectedDate.value = shiftIsoDate(selectedDate.value, 1)
+  clampSelectedDate()
+}
+
+function resetToToday() {
+  selectedDate.value = todayKey()
+}
 const synced = computed(() => !!(isAuthorized.value && isCloudReady()))
 const syncBadge = computed(() => (synced.value ? '☁️ 已同步' : '💾 本機快取'))
 const userInitials = computed(() => {
@@ -104,6 +141,7 @@ function lockApp() {
   labs.value = []
   loaded.value = false
   showSettings.value = false
+  selectedDate.value = todayKey()
   destroyQrPairing(true)
   applyCustomConfig({})
 }
@@ -761,7 +799,45 @@ const qrCountdownLabel = computed(() => {
     <main class="mx-auto max-w-4xl p-4">
       <p v-if="!loaded" class="py-10 text-center text-slate-400">載入中…</p>
       <template v-else>
-        <DailyTracker v-show="tab === 'daily'" :day="todayData" @update="updateDay" @open-settings="openSettings" />
+        <div v-show="tab === 'daily'" class="space-y-4">
+          <section class="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="shrink-0 rounded-xl bg-slate-100 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-200"
+                @click="prevDay"
+              >◀ 前一天</button>
+              <div class="min-w-0 flex-1 text-center">
+                <input
+                  v-model="selectedDate"
+                  type="date"
+                  :max="today"
+                  class="w-full rounded-lg border border-slate-300 px-2 py-2 text-center text-base text-slate-800"
+                  @change="clampSelectedDate"
+                />
+                <p class="mt-1 text-xs text-slate-500">{{ selectedDate }} ({{ selectedWeekday }})</p>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 rounded-xl bg-slate-100 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-200 disabled:opacity-40"
+                :disabled="!canGoNext"
+                @click="nextDay"
+              >後一天 ▶</button>
+            </div>
+            <div
+              v-if="isPastDate"
+              class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200"
+            >
+              <p>⚠️ 正在補登 / 檢視：{{ selectedDate }}</p>
+              <button
+                type="button"
+                class="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200"
+                @click="resetToToday"
+              >↩ 回到今天</button>
+            </div>
+          </section>
+          <DailyTracker :day="currentDay" @update="updateDay" @open-settings="openSettings" />
+        </div>
         <TrendChart v-show="tab === 'trend'" :days="days" />
         <LabMilestones
           v-show="tab === 'labs'"
