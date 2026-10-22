@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
 import { analyzeMeal, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
@@ -158,11 +158,50 @@ const medDone = computed(() => {
 })
 
 // ---------- exercise & exercise type presets ----------
+const REPS_EXERCISE_TYPES = ['抬腳跟']
+
+function isRepsExerciseType(type) {
+  return REPS_EXERCISE_TYPES.includes(String(type || '').trim())
+}
+
+/** Reps mode still stores minutes so charts and daily totals stay compatible. 20 reps ≈ 1 minute. */
+function estimateRepsMinutes(reps) {
+  return Math.max(1, Math.round((Number(reps) || 0) / 20))
+}
+
+function isRepsLog(log) {
+  return !!(log && (log.mode === 'reps' || Number(log.reps) > 0))
+}
+
 const exerciseForm = reactive({
   type: live.exerciseTypes[0] || '餐後踏步',
   duration: 20,
   note: '',
+  mode: 'duration',
+  reps: 50,
+  sets: 3,
 })
+const repsDurationPreview = computed(() => estimateRepsMinutes(exerciseForm.reps))
+
+function selectExerciseType(type) {
+  exerciseForm.type = type
+  exerciseForm.mode = isRepsExerciseType(type) ? 'reps' : 'duration'
+}
+
+function setExerciseMode(mode) {
+  exerciseForm.mode = mode === 'reps' ? 'reps' : 'duration'
+}
+
+function bumpReps(amount) {
+  exerciseForm.reps = Math.max(0, (Number(exerciseForm.reps) || 0) + amount)
+}
+
+watch(
+  () => exerciseForm.type,
+  (type) => {
+    if (isRepsExerciseType(type)) exerciseForm.mode = 'reps'
+  },
+)
 const exerciseEditMode = ref(false)
 const exerciseManageError = ref('')
 const newExerciseType = ref('')
@@ -174,12 +213,43 @@ function syncExerciseTotal(d) {
 
 function addExerciseLog(quickMin = null) {
   exerciseManageError.value = ''
-  const dMin = Number(quickMin != null ? quickMin : exerciseForm.duration)
-  if (!dMin || dMin <= 0) {
-    exerciseManageError.value = '請輸入大於 0 的運動分鐘數。'
-    return
-  }
   const type = (exerciseForm.type || '').trim() || '餐後踏步'
+  const repsMode = quickMin == null && exerciseForm.mode === 'reps'
+  let entry
+  if (repsMode) {
+    const reps = Math.round(Number(exerciseForm.reps) || 0)
+    const sets = Math.max(1, Math.round(Number(exerciseForm.sets) || 1))
+    if (reps <= 0) {
+      exerciseManageError.value = '請輸入大於 0 的次數。'
+      return
+    }
+    entry = {
+      id: `ex-${Date.now()}`,
+      time: nowTime(),
+      type,
+      mode: 'reps',
+      duration_min: estimateRepsMinutes(reps),
+      reps,
+      sets,
+      note: exerciseForm.note.trim(),
+      source: 'manual',
+    }
+  } else {
+    const dMin = Number(quickMin != null ? quickMin : exerciseForm.duration)
+    if (!dMin || dMin <= 0) {
+      exerciseManageError.value = '請輸入大於 0 的運動分鐘數。'
+      return
+    }
+    entry = {
+      id: `ex-${Date.now()}`,
+      time: nowTime(),
+      type,
+      mode: 'duration',
+      duration_min: dMin,
+      note: exerciseForm.note.trim(),
+      source: 'manual',
+    }
+  }
   commit((d) => {
     // Migrate legacy single number if logs array was previously empty
     if ((!d.exercise_logs || !d.exercise_logs.length) && d.exercise_min > 0) {
@@ -188,6 +258,7 @@ function addExerciseLog(quickMin = null) {
           id: `ex-legacy-${Date.now() - 1}`,
           time: '先前',
           type: '餐後踏步',
+          mode: 'duration',
           duration_min: Number(d.exercise_min),
           note: '既有紀錄',
           source: 'manual',
@@ -195,14 +266,7 @@ function addExerciseLog(quickMin = null) {
       ]
     }
     d.exercise_logs = d.exercise_logs || []
-    d.exercise_logs.push({
-      id: `ex-${Date.now()}`,
-      time: nowTime(),
-      type,
-      duration_min: dMin,
-      note: exerciseForm.note.trim(),
-      source: 'manual',
-    })
+    d.exercise_logs.push(entry)
     syncExerciseTotal(d)
   })
   exerciseForm.note = ''
@@ -464,6 +528,7 @@ async function submitMeal(withAI) {
         id: `ex-meal-${Date.now()}`,
         time: entry.time,
         type: '餐後踏步',
+        mode: 'duration',
         duration_min: 20,
         note: `來自餐點「${entry.analysis?.meal_name || entry.text.slice(0, 12) || '餐點'}」標籤連動`,
         source: 'meal_tag',
@@ -783,9 +848,28 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             type="button"
             class="rounded-full border px-3 py-1 text-xs transition-colors"
             :class="exerciseForm.type === t ? 'border-teal-600 bg-teal-600 text-white font-medium' : 'border-slate-300 bg-white text-slate-700'"
-            @click="exerciseForm.type = t"
+            @click="selectExerciseType(t)"
           >
             {{ t }}
+          </button>
+        </div>
+
+        <div class="flex gap-1">
+          <button
+            type="button"
+            class="rounded-lg px-3 py-1.5 text-xs font-medium"
+            :class="exerciseForm.mode !== 'reps' ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600'"
+            @click="setExerciseMode('duration')"
+          >
+            時間模式
+          </button>
+          <button
+            type="button"
+            class="rounded-lg px-3 py-1.5 text-xs font-medium"
+            :class="exerciseForm.mode === 'reps' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'"
+            @click="setExerciseMode('reps')"
+          >
+            次數模式
           </button>
         </div>
 
@@ -796,7 +880,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             placeholder="運動類型 (可自行輸入)"
             class="rounded-lg border border-slate-300 p-2 text-sm text-slate-800 sm:col-span-4"
           />
-          <div class="flex items-center gap-1.5 sm:col-span-8">
+          <div v-if="exerciseForm.mode !== 'reps'" class="flex flex-wrap items-center gap-1.5 sm:col-span-8">
             <input
               v-model="exerciseForm.duration"
               type="number"
@@ -826,6 +910,46 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             >
               +30分
             </button>
+          </div>
+          <div v-else class="flex flex-wrap items-center gap-1.5 sm:col-span-8">
+            <input
+              v-model="exerciseForm.reps"
+              type="number"
+              min="1"
+              placeholder="次數"
+              class="w-20 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
+            />
+            <span class="text-xs text-slate-500">下</span>
+            <input
+              v-model="exerciseForm.sets"
+              type="number"
+              min="1"
+              placeholder="組數"
+              class="w-16 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
+            />
+            <span class="text-xs text-slate-500">組</span>
+            <button
+              type="button"
+              class="rounded-lg bg-indigo-50 px-2.5 py-2 text-xs font-medium text-indigo-800 ring-1 ring-indigo-200 active:bg-indigo-100"
+              @click="bumpReps(20)"
+            >
+              +20下
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-indigo-50 px-2.5 py-2 text-xs font-medium text-indigo-800 ring-1 ring-indigo-200 active:bg-indigo-100"
+              @click="bumpReps(50)"
+            >
+              +50下
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-indigo-50 px-2.5 py-2 text-xs font-medium text-indigo-800 ring-1 ring-indigo-200 active:bg-indigo-100"
+              @click="bumpReps(100)"
+            >
+              +100下
+            </button>
+            <span class="text-xs font-medium text-indigo-700">約折合 {{ repsDurationPreview }} 分鐘</span>
           </div>
         </div>
 
@@ -905,7 +1029,11 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
             <div class="min-w-0 flex-1">
               <span class="font-medium text-slate-800">{{ log.type }}</span>
-              <span class="ml-1.5 font-semibold text-teal-600">{{ log.duration_min }} 分鐘</span>
+              <span
+                v-if="isRepsLog(log)"
+                class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
+              >{{ log.reps }} 下 ({{ log.sets || 1 }} 組 · 折合 {{ log.duration_min }} 分)</span>
+              <span v-else class="ml-1.5 font-semibold text-teal-600">{{ log.duration_min }} 分鐘</span>
               <span
                 v-if="log.source === 'meal_tag'"
                 class="ml-1.5 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700"

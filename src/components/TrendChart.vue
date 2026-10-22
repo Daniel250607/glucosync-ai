@@ -107,10 +107,17 @@ const scorecards = computed(() => {
 function tooltipExtras(day) {
   if (!day) return []
   const lines = []
-  const logs = (day.exercise_logs || []).filter((e) => e && (e.type || Number(e.duration_min)))
+  const logs = (day.exercise_logs || []).filter((e) => e && (e.type || Number(e.duration_min) || Number(e.reps)))
   if (logs.length) {
     lines.push(
-      `🏃 ${logs.map((e) => `${e.type || '運動'} ${Number(e.duration_min) || 0}m`).join(', ')}`,
+      `🏃 ${logs.map((e) => {
+        const reps = Number(e.reps) || 0
+        if (e.mode === 'reps' || reps > 0) {
+          const sets = Number(e.sets) || 1
+          return `${e.type || '運動'} ${reps}下(${sets}組) ${Number(e.duration_min) || 0}m`
+        }
+        return `${e.type || '運動'} ${Number(e.duration_min) || 0}m`
+      }).join(', ')}`,
     )
   } else if (day.exercise_min > 0) {
     lines.push(`🏃 運動 ${day.exercise_min}m`)
