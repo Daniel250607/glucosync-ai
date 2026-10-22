@@ -620,10 +620,21 @@
         carb_guidance: { type: 'STRING' },
         saturated_fat_guidance: { type: 'STRING' },
         hydration_sodium_guidance: { type: 'STRING' },
-        safety_flags: { type: 'ARRAY', items: { type: 'STRING' } }
+        safety_flags: { type: 'ARRAY', items: { type: 'STRING' } },
+        unlocking_summary: { type: 'STRING' },
+        proposed_targets: {
+          type: 'OBJECT',
+          properties: {
+            carbsMin: { type: 'NUMBER' }, carbsMax: { type: 'NUMBER' },
+            satFatMin: { type: 'NUMBER' }, satFatMax: { type: 'NUMBER' },
+            hydrationMin: { type: 'NUMBER' }, hydrationMax: { type: 'NUMBER' },
+            exerciseTarget: { type: 'NUMBER' }
+          },
+          required: ['carbsMin', 'carbsMax', 'satFatMin', 'satFatMax', 'hydrationMin', 'hydrationMax', 'exerciseTarget']
+        }
       },
       required: ['phase_name', 'overall_assessment', 'metric_progress', 'dietary_adjustments', 'carb_guidance',
-        'saturated_fat_guidance', 'hydration_sodium_guidance', 'safety_flags']
+        'saturated_fat_guidance', 'hydration_sodium_guidance', 'safety_flags', 'unlocking_summary', 'proposed_targets']
     };
 
     var RETRY_WAITS_MS = [1500, 3000];
@@ -733,12 +744,74 @@
       return generate(opts.apiKey, [{ text: text }], daySummarySchema);
     }
 
+    function averageIntake(summaries) {
+      var list = Array.isArray(summaries) ? summaries : [];
+      var n = list.length;
+      function round(v) { return Math.round(v * 10) / 10; }
+      if (!n) return { logged_days: 0, avg_carbs_g: 0, avg_saturated_fat_g: 0, avg_hydration_cc: 0, avg_exercise_min: 0 };
+      var sum = list.reduce(function (acc, d) {
+        acc.carbs += Number(d.carbs_g) || 0;
+        acc.sat += Number(d.saturated_fat_g) || 0;
+        acc.water += Number(d.hydration_cc) || 0;
+        acc.ex += Number(d.exercise_min) || 0;
+        return acc;
+      }, { carbs: 0, sat: 0, water: 0, ex: 0 });
+      return {
+        logged_days: n,
+        avg_carbs_g: round(sum.carbs / n),
+        avg_saturated_fat_g: round(sum.sat / n),
+        avg_hydration_cc: Math.round(sum.water / n),
+        avg_exercise_min: round(sum.ex / n)
+      };
+    }
+
+    function clampProposedTargets(raw, current) {
+      current = current || {};
+      if (!raw || typeof raw !== 'object') return null;
+      var keys = ['carbsMin', 'carbsMax', 'satFatMin', 'satFatMax', 'hydrationMin', 'hydrationMax', 'exerciseTarget'];
+      var hasAny = keys.some(function (k) { return raw[k] != null && raw[k] !== '' && isFinite(Number(raw[k])); });
+      if (!hasAny) return null;
+      function num(k, fallback) {
+        var v = Number(raw[k]);
+        if (isFinite(v)) return v;
+        var c = Number(current[k]);
+        return isFinite(c) ? c : fallback;
+      }
+      function round1(v) { return Math.round(v * 10) / 10; }
+      var carbsMin = Math.min(180, Math.max(100, num('carbsMin', 100)));
+      var carbsMax = Math.min(180, Math.max(100, num('carbsMax', 180)));
+      if (carbsMin > carbsMax) carbsMin = carbsMax;
+      var satFatMax = Math.min(20, Math.max(1, num('satFatMax', 20)));
+      var satFatMin = Math.min(satFatMax, Math.max(0, num('satFatMin', 15)));
+      var hydrationMin = Math.min(2500, Math.max(2000, num('hydrationMin', 2000)));
+      var hydrationMax = Math.min(2500, Math.max(2000, num('hydrationMax', 2500)));
+      if (hydrationMin > hydrationMax) hydrationMin = hydrationMax;
+      var exerciseTarget = Math.max(20, num('exerciseTarget', 20));
+      return {
+        carbsMin: round1(carbsMin), carbsMax: round1(carbsMax),
+        satFatMin: round1(satFatMin), satFatMax: round1(satFatMax),
+        hydrationMin: Math.round(hydrationMin), hydrationMax: Math.round(hydrationMax),
+        exerciseTarget: Math.round(exerciseTarget)
+      };
+    }
+
     function evaluateLabs(opts) {
+      var intake = averageIntake(opts.recentDays);
       var text = [
         'Evaluate the follow-up lab results against the 2026-09-05 baseline and the 11-12 month targets, then propose the next dynamic dietary phase.',
+        'Baseline labs are in the system instruction. Use the chronological follow-up labs below as the trend since baseline.',
         'Logged follow-up labs (chronological): ' + JSON.stringify(opts.labs),
-        'Recent daily intake summaries (last 14 logged days): ' + JSON.stringify(opts.recentDays)
+        'Recent 30-day intake averages across ' + intake.logged_days + ' logged days: average carbohydrates ' + intake.avg_carbs_g +
+          ' g/day, average saturated fat ' + intake.avg_saturated_fat_g + ' g/day, average hydration ' + intake.avg_hydration_cc +
+          ' cc/day, average exercise ' + intake.avg_exercise_min + ' min/day.',
+        'Intake average object: ' + JSON.stringify(intake),
+        'Daily intake summaries inside that 30-day window: ' + JSON.stringify(opts.recentDays)
       ].concat(userConfigLines(), [
+        'Compare lab trends with these actual eating habits before suggesting a phase change.',
+        'proposed_targets must stay inside clinical safety bounds: carbsMin and carbsMax within 100-180 g (NEVER ketogenic or ultra-low carb; euDKA risk on Forxiga), satFatMax <= 20 and satFatMin <= satFatMax (LDL-C), hydrationMin and hydrationMax within 2000-2500 cc (UAcr and urine specific gravity), exerciseTarget >= 20.',
+        'If labs are improving and the 30-day averages already sit inside those bounds, you may modestly unlock portions (for example a slightly larger multigrain rice serving or a planned weekend flex meal) while keeping proposed_targets inside the bounds above.',
+        'If labs worsen or averages already breach a limit, tighten targets inside the same bounds. Do not raise saturated fat above 20 g, do not drop carbohydrate below 100 g, and do not drop hydration below 2000 cc.',
+        'unlocking_summary: one or two Traditional Chinese sentences on whether meal portions can be increased safely.',
         'Remember: never recommend ketogenic / zero-carb eating (Forxiga + U-Ketones +++); prioritize saturated fat over dietary cholesterol; keep hydration and sodium guidance.'
       ]).join('\n');
       return generate(opts.apiKey, [{ text: text }], labEvalSchema);
@@ -1653,6 +1726,56 @@
           return keys.map(function (k) { return summarizeDay(props.days[k]); });
         });
 
+        function compliance(rows, test) {
+          var total = rows.length;
+          if (!total) return { pct: null, hit: 0, total: 0 };
+          var hit = rows.filter(test).length;
+          return { pct: Math.round((hit / total) * 100), hit: hit, total: total };
+        }
+
+        var scorecards = computed(function () {
+          var keys = Object.keys(props.days).sort();
+          var curr = series.value;
+          var prev = keys.slice(Math.max(0, keys.length - range.value * 2), Math.max(0, keys.length - range.value))
+            .map(function (k) { return summarizeDay(props.days[k]); });
+          var t = live.targets;
+          var defs = [
+            { id: 'carbs', label: '碳水安全', hint: t.carbsMin + '–' + t.carbsMax + ' g', test: function (d) { return d.carbs_g >= t.carbsMin && d.carbs_g <= t.carbsMax; } },
+            { id: 'sat', label: '飽和脂肪', hint: '≤ ' + t.satFatMax + ' g', test: function (d) { return d.saturated_fat_g <= t.satFatMax; } },
+            { id: 'water', label: '飲水', hint: '≥ ' + t.hydrationMin + ' cc', test: function (d) { return d.hydration_cc >= t.hydrationMin; } },
+            { id: 'ex', label: '運動', hint: '≥ ' + t.exerciseTarget + ' 分', test: function (d) { return d.exercise_min >= t.exerciseTarget; } }
+          ];
+          return defs.map(function (def) {
+            var now = compliance(curr, def.test);
+            var before = compliance(prev, def.test);
+            var delta = before.total === now.total && now.pct != null && before.pct != null ? now.pct - before.pct : null;
+            var badge = '尚無對照';
+            var badgeClass = 'bg-slate-100 text-slate-500';
+            if (delta != null) {
+              if (delta > 0) { badge = '▲ +' + delta; badgeClass = 'bg-emerald-100 text-emerald-800'; }
+              else if (delta < 0) { badge = '▼ ' + delta; badgeClass = 'bg-rose-100 text-rose-800'; }
+              else { badge = '持平'; badgeClass = 'bg-slate-100 text-slate-600'; }
+            }
+            return { id: def.id, label: def.label, hint: def.hint, pct: now.pct, hit: now.hit, total: now.total, badge: badge, badgeClass: badgeClass };
+          });
+        });
+
+        function tooltipExtras(day) {
+          if (!day) return [];
+          var lines = [];
+          var logs = (day.exercise_logs || []).filter(function (e) { return e && (e.type || Number(e.duration_min)); });
+          if (logs.length) {
+            lines.push('🏃 ' + logs.map(function (e) { return (e.type || '運動') + ' ' + (Number(e.duration_min) || 0) + 'm'; }).join(', '));
+          } else if (day.exercise_min > 0) {
+            lines.push('🏃 運動 ' + day.exercise_min + 'm');
+          }
+          var drinks = (day.drinks || []).filter(function (d) { return d && d.name; });
+          if (drinks.length) {
+            lines.push('🍵 ' + drinks.map(function (d) { return d.name + ' ' + (Number(d.volume_cc) || 0) + 'cc'; }).join(', '));
+          }
+          return lines;
+        }
+
         function buildData() {
           var TARGETS = live.targets;
           var s = series.value;
@@ -1693,7 +1816,17 @@
           return {
             responsive: true, maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
-            plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+            plugins: {
+              legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+              tooltip: {
+                callbacks: {
+                  afterBody: function (items) {
+                    var index = items && items[0] ? items[0].dataIndex : -1;
+                    return tooltipExtras(series.value[index]);
+                  }
+                }
+              }
+            },
             scales: {
               x: { grid: { display: false } },
               yG: { type: 'linear', position: 'left', beginAtZero: true, suggestedMax: 220, title: { display: true, text: '碳水 (g)' } },
@@ -1715,7 +1848,7 @@
         watch([series, function () { return Object.assign({}, live.targets); }], render);
         onBeforeUnmount(function () { if (chart) chart.destroy(); });
 
-        return { range: range, canvas: canvas, series: series, live: live };
+        return { range: range, canvas: canvas, series: series, scorecards: scorecards, live: live };
       },
       template: `
 <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -1725,6 +1858,16 @@
       <button v-for="r in [7, 14, 30]" :key="r" class="rounded-md px-3 py-1.5 text-sm"
         :class="range === r ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600'" @click="range = r">{{ r }}天</button>
     </div>
+  </div>
+  <div v-if="series.length" class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <article v-for="card in scorecards" :key="card.id" class="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+      <p class="text-xs text-slate-500">{{ card.label }}</p>
+      <div class="mt-1 flex items-end justify-between gap-1">
+        <p class="text-2xl font-semibold tabular-nums text-slate-800">{{ card.pct == null ? '—' : card.pct + '%' }}</p>
+        <span class="rounded-full px-2 py-0.5 text-[11px] font-medium" :class="card.badgeClass" :title="'較前一段 ' + range + ' 天'">{{ card.badge }}</span>
+      </div>
+      <p class="mt-1 text-[11px] text-slate-400">{{ card.hint }} · {{ card.hit }}/{{ card.total }} 天</p>
+    </article>
   </div>
   <p v-if="!series.length" class="mt-6 text-center text-sm text-slate-400">尚無資料。請先在「今日記錄」分頁記錄飲食、飲水與運動。</p>
   <div class="mt-3 h-80 sm:h-96" :class="{ hidden: !series.length }"><canvas ref="canvas"></canvas></div>
@@ -1737,7 +1880,7 @@
      * ===================================================================== */
     var LabMilestones = {
       props: { labs: { type: Array, required: true }, days: { type: Object, required: true } },
-      emits: ['add-lab', 'open-settings'],
+      emits: ['add-lab', 'open-settings', 'apply-targets'],
       setup: function (props, ctx) {
         var showToast = inject('showToast', function () {});
         var latest = computed(function () { return props.labs.length ? props.labs[props.labs.length - 1] : null; });
@@ -1775,7 +1918,32 @@
         var evaluating = ref(false);
         var evalError = ref('');
         var evaluation = ref(null);
+        var intakeStats = ref(null);
         var STATUS_DOT = DOT_STYLE;
+
+        function recentIntakeDays(daysMap) {
+          var start = new Date();
+          start.setDate(start.getDate() - 29);
+          var startKey = todayKey(start);
+          var endKey = todayKey();
+          return Object.keys(daysMap).filter(function (k) { return k >= startKey && k <= endKey; }).sort()
+            .map(function (k) { return summarizeDay(daysMap[k]); });
+        }
+
+        var safeTargets = computed(function () {
+          return clampProposedTargets(evaluation.value && evaluation.value.proposed_targets, live.targets);
+        });
+        var targetsMatch = computed(function () {
+          var next = safeTargets.value;
+          if (!next) return false;
+          return Object.keys(next).every(function (k) { return Number(live.targets[k]) === Number(next[k]); });
+        });
+        function applyProposed() {
+          if (!safeTargets.value || targetsMatch.value) return;
+          var copy = {};
+          Object.keys(safeTargets.value).forEach(function (k) { copy[k] = safeTargets.value[k]; });
+          ctx.emit('apply-targets', copy);
+        }
 
         async function runEvaluation() {
           evalError.value = '';
@@ -1784,7 +1952,8 @@
           if (!props.labs.length) { evalError.value = '請先新增至少一筆追蹤檢驗結果。'; return; }
           evaluating.value = true;
           try {
-            var recentDays = Object.keys(props.days).sort().slice(-14).map(function (k) { return summarizeDay(props.days[k]); });
+            var recentDays = recentIntakeDays(props.days);
+            intakeStats.value = averageIntake(recentDays);
             evaluation.value = await evaluateLabs({ apiKey: apiKey, labs: props.labs, recentDays: recentDays });
           } catch (err) {
             evalError.value = err.message || String(err);
@@ -1801,7 +1970,9 @@
           LAB_FIELDS: LAB_FIELDS, URINE_QUALITATIVE: URINE_QUALITATIVE, BASELINE_DATE: BASELINE_DATE,
           latest: latest, statusOf: statusOf, STATUS_STYLE: STATUS_STYLE, STATUS_TEXT: STATUS_TEXT, delta: delta,
           form: form, formError: formError, submit: submit,
-          evaluating: evaluating, evalError: evalError, evaluation: evaluation, STATUS_DOT: STATUS_DOT, runEvaluation: runEvaluation,
+          evaluating: evaluating, evalError: evalError, evaluation: evaluation, intakeStats: intakeStats,
+          safeTargets: safeTargets, targetsMatch: targetsMatch, applyProposed: applyProposed, live: live,
+          STATUS_DOT: STATUS_DOT, runEvaluation: runEvaluation,
           labFields: labFields, labsReversed: labsReversed
         };
       },
@@ -1879,13 +2050,38 @@
 
   <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
     <h2 class="font-semibold text-slate-800">🤖 AI 飲食階段評估</h2>
-    <p class="text-xs text-slate-500">根據最新檢驗與近 14 天飲食紀錄，動態調整下一階段飲食方向。</p>
+    <p class="text-xs text-slate-500">根據最新檢驗與近 30 天飲食紀錄，動態調整下一階段飲食方向。</p>
     <button class="mt-3 w-full rounded-xl bg-indigo-600 py-3.5 font-semibold text-white disabled:opacity-50 active:bg-indigo-700" :disabled="evaluating" @click="runEvaluation">
       {{ evaluating ? 'AI 評估中…' : '✨ 以 AI 評估並調整飲食階段' }}
     </button>
     <p v-if="evalError" class="mt-2 rounded-lg bg-rose-50 p-2 text-sm text-rose-700">{{ evalError }}</p>
 
     <div v-if="evaluation" class="mt-4 space-y-3 text-sm text-slate-700">
+      <div class="rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-200">
+        <h3 class="text-base font-semibold text-amber-950">動態飲食解封與階段調整建議</h3>
+        <p v-if="intakeStats" class="mt-1 text-xs text-amber-800">近 30 天平均（{{ intakeStats.logged_days }} 天）：碳水 {{ intakeStats.avg_carbs_g }} g · 飽和脂肪 {{ intakeStats.avg_saturated_fat_g }} g · 飲水 {{ intakeStats.avg_hydration_cc }} cc · 運動 {{ intakeStats.avg_exercise_min }} 分</p>
+        <p class="mt-2 text-amber-950">{{ evaluation.unlocking_summary || '尚無解封說明。' }}</p>
+        <dl v-if="safeTargets" class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+          <div class="rounded-lg bg-white/80 p-2">
+            <dt class="text-amber-700">碳水 (g)</dt>
+            <dd class="font-medium text-slate-800">{{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} → {{ safeTargets.carbsMin }}–{{ safeTargets.carbsMax }}</dd>
+          </div>
+          <div class="rounded-lg bg-white/80 p-2">
+            <dt class="text-amber-700">飽和脂肪 (g)</dt>
+            <dd class="font-medium text-slate-800">{{ live.targets.satFatMin }}–{{ live.targets.satFatMax }} → {{ safeTargets.satFatMin }}–{{ safeTargets.satFatMax }}</dd>
+          </div>
+          <div class="rounded-lg bg-white/80 p-2">
+            <dt class="text-amber-700">飲水 (cc)</dt>
+            <dd class="font-medium text-slate-800">{{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} → {{ safeTargets.hydrationMin }}–{{ safeTargets.hydrationMax }}</dd>
+          </div>
+          <div class="rounded-lg bg-white/80 p-2">
+            <dt class="text-amber-700">運動 (分)</dt>
+            <dd class="font-medium text-slate-800">{{ live.targets.exerciseTarget }} → {{ safeTargets.exerciseTarget }}</dd>
+          </div>
+        </dl>
+        <button v-if="safeTargets" type="button" class="mt-3 w-full rounded-xl bg-amber-600 py-3 font-semibold text-white disabled:opacity-60 active:bg-amber-700" :disabled="targetsMatch" @click="applyProposed">{{ targetsMatch ? '目前目標已符合建議' : '✨ 一鍵套用建議目標至設定' }}</button>
+        <p class="mt-2 text-[11px] text-amber-800">套用時守住安全邊界：碳水 100–180 g、飽和脂肪上限 ≤ 20 g、飲水 2000–2500 cc、運動 ≥ 20 分。</p>
+      </div>
       <div class="rounded-xl bg-indigo-50 p-3">
         <p class="font-semibold text-indigo-900">{{ evaluation.phase_name }}</p>
         <p class="mt-1">{{ evaluation.overall_assessment }}</p>
@@ -2017,6 +2213,12 @@
           labs.value = labs.value.filter(function (l) { return l.date !== lab.date; }).concat([lab])
             .sort(function (a, b) { return a.date.localeCompare(b.date); });
           await saveLab(lab);
+        }
+        function applyProposedTargets(targets) {
+          if (!targets) return;
+          updateCustom('targets', targets);
+          if (showSettings.value) loadDraft();
+          showToast('已套用建議目標至設定');
         }
 
         var showSettings = ref(false);
@@ -2401,7 +2603,7 @@
           synced: synced, syncBadge: syncBadge, userInitials: userInitials,
           handleSignIn: handleSignIn, handleSignOut: handleSignOut,
           showFirebaseSetup: showFirebaseSetup, openFirebaseSetup: openFirebaseSetup, submitFirebaseSetup: submitFirebaseSetup,
-          updateDay: updateDay, addLab: addLab,
+          updateDay: updateDay, addLab: addLab, applyProposedTargets: applyProposedTargets,
           showSettings: showSettings, settingsTab: settingsTab, showApiKey: showApiKey, pendingPairBanner: pendingPairBanner,
           settings: settings, settingsError: settingsError, openSettings: openSettings, closeSettings: closeSettings, submitSettings: submitSettings,
           exportData: exportData, importData: importData, dataMsg: dataMsg, dataMsgOk: dataMsgOk,
@@ -2503,7 +2705,7 @@
         <daily-tracker :day="currentDay" @update="updateDay" @open-settings="openSettings"></daily-tracker>
       </div>
       <trend-chart v-if="tab === 'trend'" :days="days"></trend-chart>
-      <lab-milestones v-show="tab === 'labs'" :labs="labs" :days="days" @add-lab="addLab" @open-settings="openSettings"></lab-milestones>
+      <lab-milestones v-show="tab === 'labs'" :labs="labs" :days="days" @add-lab="addLab" @open-settings="openSettings" @apply-targets="applyProposedTargets"></lab-milestones>
     </template>
   </main>
 

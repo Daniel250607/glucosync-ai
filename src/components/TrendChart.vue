@@ -42,6 +42,86 @@ const series = computed(() => {
   return keys.map((k) => summarizeDay(props.days[k]))
 })
 
+function compliance(rows, test) {
+  const total = rows.length
+  if (!total) return { pct: null, hit: 0, total: 0 }
+  const hit = rows.filter(test).length
+  return { pct: Math.round((hit / total) * 100), hit, total }
+}
+
+const scorecards = computed(() => {
+  const keys = Object.keys(props.days).sort()
+  const curr = series.value
+  const prev = keys
+    .slice(Math.max(0, keys.length - range.value * 2), Math.max(0, keys.length - range.value))
+    .map((k) => summarizeDay(props.days[k]))
+  const t = live.targets
+  const defs = [
+    {
+      id: 'carbs',
+      label: '碳水安全',
+      hint: `${t.carbsMin}–${t.carbsMax} g`,
+      test: (d) => d.carbs_g >= t.carbsMin && d.carbs_g <= t.carbsMax,
+    },
+    {
+      id: 'sat',
+      label: '飽和脂肪',
+      hint: `≤ ${t.satFatMax} g`,
+      test: (d) => d.saturated_fat_g <= t.satFatMax,
+    },
+    {
+      id: 'water',
+      label: '飲水',
+      hint: `≥ ${t.hydrationMin} cc`,
+      test: (d) => d.hydration_cc >= t.hydrationMin,
+    },
+    {
+      id: 'ex',
+      label: '運動',
+      hint: `≥ ${t.exerciseTarget} 分`,
+      test: (d) => d.exercise_min >= t.exerciseTarget,
+    },
+  ]
+  return defs.map((def) => {
+    const now = compliance(curr, def.test)
+    const before = compliance(prev, def.test)
+    const delta = before.total === now.total && now.pct != null && before.pct != null ? now.pct - before.pct : null
+    let badge = '尚無對照'
+    let badgeClass = 'bg-slate-100 text-slate-500'
+    if (delta != null) {
+      if (delta > 0) {
+        badge = `▲ +${delta}`
+        badgeClass = 'bg-emerald-100 text-emerald-800'
+      } else if (delta < 0) {
+        badge = `▼ ${delta}`
+        badgeClass = 'bg-rose-100 text-rose-800'
+      } else {
+        badge = '持平'
+        badgeClass = 'bg-slate-100 text-slate-600'
+      }
+    }
+    return { id: def.id, label: def.label, hint: def.hint, ...now, badge, badgeClass }
+  })
+})
+
+function tooltipExtras(day) {
+  if (!day) return []
+  const lines = []
+  const logs = (day.exercise_logs || []).filter((e) => e && (e.type || Number(e.duration_min)))
+  if (logs.length) {
+    lines.push(
+      `🏃 ${logs.map((e) => `${e.type || '運動'} ${Number(e.duration_min) || 0}m`).join(', ')}`,
+    )
+  } else if (day.exercise_min > 0) {
+    lines.push(`🏃 運動 ${day.exercise_min}m`)
+  }
+  const drinks = (day.drinks || []).filter((d) => d && d.name)
+  if (drinks.length) {
+    lines.push(`🍵 ${drinks.map((d) => `${d.name} ${Number(d.volume_cc) || 0}cc`).join(', ')}`)
+  }
+  return lines
+}
+
 function buildData() {
   const TARGETS = live.targets // user-configurable (Settings), read fresh on every render
   const s = series.value
@@ -185,6 +265,14 @@ function buildOptions() {
         position: 'bottom',
         labels: { boxWidth: 12, font: { size: 11 } },
       },
+      tooltip: {
+        callbacks: {
+          afterBody(items) {
+            const index = items && items[0] ? items[0].dataIndex : -1
+            return tooltipExtras(series.value[index])
+          },
+        },
+      },
     },
     scales: {
       x: { grid: { display: false } },
@@ -250,6 +338,18 @@ onBeforeUnmount(() => chart?.destroy())
           {{ r }}天
         </button>
       </div>
+    </div>
+    <div v-if="series.length" class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <article v-for="card in scorecards" :key="card.id" class="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+        <p class="text-xs text-slate-500">{{ card.label }}</p>
+        <div class="mt-1 flex items-end justify-between gap-1">
+          <p class="text-2xl font-semibold tabular-nums text-slate-800">{{ card.pct == null ? '—' : card.pct + '%' }}</p>
+          <span class="rounded-full px-2 py-0.5 text-[11px] font-medium" :class="card.badgeClass" :title="'較前一段 ' + range + ' 天'">
+            {{ card.badge }}
+          </span>
+        </div>
+        <p class="mt-1 text-[11px] text-slate-400">{{ card.hint }} · {{ card.hit }}/{{ card.total }} 天</p>
+      </article>
     </div>
     <p v-if="!series.length" class="mt-6 text-center text-sm text-slate-400">
       尚無資料。請先在「今日記錄」分頁記錄飲食、飲水與運動。

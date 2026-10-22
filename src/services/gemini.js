@@ -123,6 +123,20 @@ const labEvalSchema = {
     saturated_fat_guidance: { type: 'STRING' },
     hydration_sodium_guidance: { type: 'STRING' },
     safety_flags: { type: 'ARRAY', items: { type: 'STRING' } },
+    unlocking_summary: { type: 'STRING' },
+    proposed_targets: {
+      type: 'OBJECT',
+      properties: {
+        carbsMin: { type: 'NUMBER' },
+        carbsMax: { type: 'NUMBER' },
+        satFatMin: { type: 'NUMBER' },
+        satFatMax: { type: 'NUMBER' },
+        hydrationMin: { type: 'NUMBER' },
+        hydrationMax: { type: 'NUMBER' },
+        exerciseTarget: { type: 'NUMBER' },
+      },
+      required: ['carbsMin', 'carbsMax', 'satFatMin', 'satFatMax', 'hydrationMin', 'hydrationMax', 'exerciseTarget'],
+    },
   },
   required: [
     'phase_name',
@@ -133,6 +147,8 @@ const labEvalSchema = {
     'saturated_fat_guidance',
     'hydration_sodium_guidance',
     'safety_flags',
+    'unlocking_summary',
+    'proposed_targets',
   ],
 }
 
@@ -261,15 +277,95 @@ export async function analyzeMeal({ apiKey, text = '', tags = [], image = null, 
   return generate({ apiKey, parts, schema: mealSchema })
 }
 
+/** Mean intake across logged-day summaries. Zeros count, so unlogged meals pull carb and fat averages down. */
+export function averageIntake(summaries) {
+  const list = Array.isArray(summaries) ? summaries : []
+  const n = list.length
+  const round = (v) => Math.round(v * 10) / 10
+  if (!n) {
+    return { logged_days: 0, avg_carbs_g: 0, avg_saturated_fat_g: 0, avg_hydration_cc: 0, avg_exercise_min: 0 }
+  }
+  const sum = list.reduce(
+    (acc, d) => {
+      acc.carbs += Number(d.carbs_g) || 0
+      acc.sat += Number(d.saturated_fat_g) || 0
+      acc.water += Number(d.hydration_cc) || 0
+      acc.ex += Number(d.exercise_min) || 0
+      return acc
+    },
+    { carbs: 0, sat: 0, water: 0, ex: 0 },
+  )
+  return {
+    logged_days: n,
+    avg_carbs_g: round(sum.carbs / n),
+    avg_saturated_fat_g: round(sum.sat / n),
+    avg_hydration_cc: Math.round(sum.water / n),
+    avg_exercise_min: round(sum.ex / n),
+  }
+}
+
 /**
- * Evaluate lab milestones against baseline and recent intake, and suggest a dietary phase.
+ * Clamp a model-proposed target set onto clinical safety bounds.
+ * Carbs stay 100-180 g (no ketogenic intake on Forxiga). Saturated fat stays <= 20 g.
+ * Hydration stays 2000-2500 cc. Exercise stays at least 20 minutes.
+ * Returns null when the payload has no numeric target fields.
+ */
+export function clampProposedTargets(raw, current = {}) {
+  if (!raw || typeof raw !== 'object') return null
+  const keys = ['carbsMin', 'carbsMax', 'satFatMin', 'satFatMax', 'hydrationMin', 'hydrationMax', 'exerciseTarget']
+  const hasAny = keys.some((k) => raw[k] != null && raw[k] !== '' && Number.isFinite(Number(raw[k])))
+  if (!hasAny) return null
+  const num = (k, fallback) => {
+    const v = Number(raw[k])
+    if (Number.isFinite(v)) return v
+    const c = Number(current[k])
+    return Number.isFinite(c) ? c : fallback
+  }
+  const round1 = (v) => Math.round(v * 10) / 10
+
+  let carbsMin = Math.min(180, Math.max(100, num('carbsMin', 100)))
+  let carbsMax = Math.min(180, Math.max(100, num('carbsMax', 180)))
+  if (carbsMin > carbsMax) carbsMin = carbsMax
+
+  const satFatMax = Math.min(20, Math.max(1, num('satFatMax', 20)))
+  const satFatMin = Math.min(satFatMax, Math.max(0, num('satFatMin', 15)))
+
+  let hydrationMin = Math.min(2500, Math.max(2000, num('hydrationMin', 2000)))
+  let hydrationMax = Math.min(2500, Math.max(2000, num('hydrationMax', 2500)))
+  if (hydrationMin > hydrationMax) hydrationMin = hydrationMax
+
+  const exerciseTarget = Math.max(20, num('exerciseTarget', 20))
+
+  return {
+    carbsMin: round1(carbsMin),
+    carbsMax: round1(carbsMax),
+    satFatMin: round1(satFatMin),
+    satFatMax: round1(satFatMax),
+    hydrationMin: Math.round(hydrationMin),
+    hydrationMax: Math.round(hydrationMax),
+    exerciseTarget: Math.round(exerciseTarget),
+  }
+}
+
+/**
+ * Evaluate lab milestones against baseline, follow-up labs, and recent intake.
+ * `recentDays` should be the logged days inside the recent 30-day window.
  */
 export async function evaluateLabs({ apiKey, labs, recentDays }) {
+  const intake = averageIntake(recentDays)
   const text = [
     'Evaluate the follow-up lab results against the 2026-09-05 baseline and the 11-12 month targets, then propose the next dynamic dietary phase.',
+    'Baseline labs are in the system instruction. Use the chronological follow-up labs below as the trend since baseline.',
     `Logged follow-up labs (chronological): ${JSON.stringify(labs)}`,
-    `Recent daily intake summaries (last 14 logged days): ${JSON.stringify(recentDays)}`,
+    `Recent 30-day intake averages across ${intake.logged_days} logged days: average carbohydrates ${intake.avg_carbs_g} g/day, average saturated fat ${intake.avg_saturated_fat_g} g/day, average hydration ${intake.avg_hydration_cc} cc/day, average exercise ${intake.avg_exercise_min} min/day.`,
+    `Intake average object: ${JSON.stringify(intake)}`,
+    `Daily intake summaries inside that 30-day window: ${JSON.stringify(recentDays)}`,
     ...userConfigLines(),
+    'Compare lab trends with these actual eating habits before suggesting a phase change.',
+    'proposed_targets must stay inside clinical safety bounds: carbsMin and carbsMax within 100-180 g (NEVER ketogenic or ultra-low carb; euDKA risk on Forxiga), satFatMax <= 20 and satFatMin <= satFatMax (LDL-C), hydrationMin and hydrationMax within 2000-2500 cc (UAcr and urine specific gravity), exerciseTarget >= 20.',
+    'If labs are improving and the 30-day averages already sit inside those bounds, you may modestly unlock portions (for example a slightly larger multigrain rice serving or a planned weekend flex meal) while keeping proposed_targets inside the bounds above.',
+    'If labs worsen or averages already breach a limit, tighten targets inside the same bounds. Do not raise saturated fat above 20 g, do not drop carbohydrate below 100 g, and do not drop hydration below 2000 cc.',
+    'unlocking_summary: one or two Traditional Chinese sentences on whether meal portions can be increased safely.',
     'Remember: never recommend ketogenic / zero-carb eating (Forxiga + U-Ketones +++); prioritize saturated fat over dietary cholesterol; keep hydration and sodium guidance.',
   ].join('\n')
   return generate({ apiKey, parts: [{ text }], schema: labEvalSchema })

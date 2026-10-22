@@ -179,6 +179,13 @@ async function addLab(lab) {
   await saveLab(lab)
 }
 
+function applyProposedTargets(targets) {
+  if (!targets) return
+  updateCustom('targets', targets)
+  if (showSettings.value) loadDraft()
+  showToast('已套用建議目標至設定')
+}
+
 // ---------- settings ----------
 const showSettings = ref(false)
 const settingsTab = ref('system')
@@ -845,6 +852,7 @@ const qrCountdownLabel = computed(() => {
           :days="days"
           @add-lab="addLab"
           @open-settings="openSettings"
+          @apply-targets="applyProposedTargets"
         />
       </template>
     </main>
