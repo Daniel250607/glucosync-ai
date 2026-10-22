@@ -1,14 +1,14 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE } from '../data/presets.js'
-import { evaluateLabs, summarizeDay } from '../services/gemini.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE, live } from '../data/presets.js'
+import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
 
 const props = defineProps({
   labs: { type: Array, required: true }, // follow-up labs, chronological
   days: { type: Object, required: true },
 })
-const emit = defineEmits(['add-lab', 'open-settings'])
+const emit = defineEmits(['add-lab', 'open-settings', 'apply-targets'])
 const showToast = inject('showToast', () => {})
 
 const latest = computed(() => (props.labs.length ? props.labs[props.labs.length - 1] : null))
@@ -64,7 +64,31 @@ function submit() {
 const evaluating = ref(false)
 const evalError = ref('')
 const evaluation = ref(null)
+const intakeStats = ref(null)
 const STATUS_DOT = { green: 'bg-emerald-500', yellow: 'bg-amber-400', red: 'bg-rose-500' }
+
+function recentIntakeDays(days) {
+  const start = new Date()
+  start.setDate(start.getDate() - 29)
+  const startKey = todayKey(start)
+  const endKey = todayKey()
+  return Object.keys(days)
+    .filter((k) => k >= startKey && k <= endKey)
+    .sort()
+    .map((k) => summarizeDay(days[k]))
+}
+
+const safeTargets = computed(() => clampProposedTargets(evaluation.value?.proposed_targets, live.targets))
+const targetsMatch = computed(() => {
+  const next = safeTargets.value
+  if (!next) return false
+  return Object.keys(next).every((k) => Number(live.targets[k]) === Number(next[k]))
+})
+
+function applyProposed() {
+  if (!safeTargets.value || targetsMatch.value) return
+  emit('apply-targets', { ...safeTargets.value })
+}
 
 async function runEvaluation() {
   evalError.value = ''
@@ -80,10 +104,8 @@ async function runEvaluation() {
   }
   evaluating.value = true
   try {
-    const recentDays = Object.keys(props.days)
-      .sort()
-      .slice(-14)
-      .map((k) => summarizeDay(props.days[k]))
+    const recentDays = recentIntakeDays(props.days)
+    intakeStats.value = averageIntake(recentDays)
     evaluation.value = await evaluateLabs({ apiKey, labs: props.labs, recentDays })
   } catch (err) {
     evalError.value = err.message || String(err)
@@ -199,7 +221,7 @@ async function runEvaluation() {
     <!-- AI evaluation -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <h2 class="font-semibold text-slate-800">🤖 AI 飲食階段評估</h2>
-      <p class="text-xs text-slate-500">根據最新檢驗與近 14 天飲食紀錄，動態調整下一階段飲食方向。</p>
+      <p class="text-xs text-slate-500">根據最新檢驗與近 30 天飲食紀錄，動態調整下一階段飲食方向。</p>
       <button
         class="mt-3 w-full rounded-xl bg-indigo-600 py-3.5 font-semibold text-white disabled:opacity-50 active:bg-indigo-700"
         :disabled="evaluating"
@@ -210,6 +232,43 @@ async function runEvaluation() {
       <p v-if="evalError" class="mt-2 rounded-lg bg-rose-50 p-2 text-sm text-rose-700">{{ evalError }}</p>
 
       <div v-if="evaluation" class="mt-4 space-y-3 text-sm text-slate-700">
+        <div class="rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-200">
+          <h3 class="text-base font-semibold text-amber-950">動態飲食解封與階段調整建議</h3>
+          <p v-if="intakeStats" class="mt-1 text-xs text-amber-800">
+            近 30 天平均（{{ intakeStats.logged_days }} 天）：碳水 {{ intakeStats.avg_carbs_g }} g · 飽和脂肪
+            {{ intakeStats.avg_saturated_fat_g }} g · 飲水 {{ intakeStats.avg_hydration_cc }} cc · 運動
+            {{ intakeStats.avg_exercise_min }} 分
+          </p>
+          <p class="mt-2 text-amber-950">{{ evaluation.unlocking_summary || '尚無解封說明。' }}</p>
+          <dl v-if="safeTargets" class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+            <div class="rounded-lg bg-white/80 p-2">
+              <dt class="text-amber-700">碳水 (g)</dt>
+              <dd class="font-medium text-slate-800">{{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} → {{ safeTargets.carbsMin }}–{{ safeTargets.carbsMax }}</dd>
+            </div>
+            <div class="rounded-lg bg-white/80 p-2">
+              <dt class="text-amber-700">飽和脂肪 (g)</dt>
+              <dd class="font-medium text-slate-800">{{ live.targets.satFatMin }}–{{ live.targets.satFatMax }} → {{ safeTargets.satFatMin }}–{{ safeTargets.satFatMax }}</dd>
+            </div>
+            <div class="rounded-lg bg-white/80 p-2">
+              <dt class="text-amber-700">飲水 (cc)</dt>
+              <dd class="font-medium text-slate-800">{{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} → {{ safeTargets.hydrationMin }}–{{ safeTargets.hydrationMax }}</dd>
+            </div>
+            <div class="rounded-lg bg-white/80 p-2">
+              <dt class="text-amber-700">運動 (分)</dt>
+              <dd class="font-medium text-slate-800">{{ live.targets.exerciseTarget }} → {{ safeTargets.exerciseTarget }}</dd>
+            </div>
+          </dl>
+          <button
+            v-if="safeTargets"
+            type="button"
+            class="mt-3 w-full rounded-xl bg-amber-600 py-3 font-semibold text-white disabled:opacity-60 active:bg-amber-700"
+            :disabled="targetsMatch"
+            @click="applyProposed"
+          >
+            {{ targetsMatch ? '目前目標已符合建議' : '✨ 一鍵套用建議目標至設定' }}
+          </button>
+          <p class="mt-2 text-[11px] text-amber-800">套用時守住安全邊界：碳水 100–180 g、飽和脂肪上限 ≤ 20 g、飲水 2000–2500 cc、運動 ≥ 20 分。</p>
+        </div>
         <div class="rounded-xl bg-indigo-50 p-3">
           <p class="font-semibold text-indigo-900">{{ evaluation.phase_name }}</p>
           <p class="mt-1">{{ evaluation.overall_assessment }}</p>
