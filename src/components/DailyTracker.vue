@@ -35,6 +35,19 @@ function addWater(cc) {
   })
 }
 
+const waterInputCc = ref(300)
+const waterError = ref('')
+
+function logCustomWater() {
+  waterError.value = ''
+  const cc = Math.round(Number(waterInputCc.value))
+  if (!Number.isFinite(cc) || cc < 1) {
+    waterError.value = '請輸入 1 cc 以上的純水量。'
+    return
+  }
+  addWater(cc)
+}
+
 const drinkForm = reactive({ name: '', volume_cc: 350, counts_as_water: true, note: '' })
 const drinkEditMode = ref(false)
 const drinkManageError = ref('')
@@ -609,17 +622,32 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         <div class="absolute inset-y-0 w-0.5 bg-slate-400/70" :style="{ left: hydrationMinPct + '%' }" />
       </div>
 
-      <!-- Pure water quick buttons -->
-      <div class="mt-3 grid grid-cols-3 gap-2">
-        <button class="rounded-xl bg-sky-600 py-2.5 text-sm font-medium text-white active:bg-sky-700" @click="addWater(300)">
-          純水 +300cc
-        </button>
-        <button class="rounded-xl bg-sky-600 py-2.5 text-sm font-medium text-white active:bg-sky-700" @click="addWater(500)">
-          純水 +500cc
-        </button>
-        <button class="rounded-xl bg-slate-100 py-2.5 text-sm text-slate-600 active:bg-slate-200" @click="addWater(-300)">
-          −300cc
-        </button>
+      <div class="mt-3 space-y-2">
+        <div class="flex gap-2">
+          <input
+            v-model="waterInputCc"
+            type="number"
+            min="1"
+            step="10"
+            inputmode="numeric"
+            placeholder="cc"
+            class="w-28 rounded-lg border border-slate-300 p-2.5 text-base text-slate-800"
+          />
+          <button
+            type="button"
+            class="min-w-0 flex-1 rounded-xl bg-sky-600 px-3 py-2.5 text-sm font-medium text-white active:bg-sky-700"
+            @click="logCustomWater"
+          >
+            💧 記錄純水 +{{ waterInputCc }}cc
+          </button>
+        </div>
+        <div class="grid grid-cols-4 gap-2">
+          <button type="button" class="rounded-xl bg-sky-50 py-2.5 text-sm font-medium text-sky-800 ring-1 ring-sky-200 active:bg-sky-100" @click="addWater(100)">+100cc</button>
+          <button type="button" class="rounded-xl bg-sky-50 py-2.5 text-sm font-medium text-sky-800 ring-1 ring-sky-200 active:bg-sky-100" @click="addWater(300)">+300cc</button>
+          <button type="button" class="rounded-xl bg-sky-50 py-2.5 text-sm font-medium text-sky-800 ring-1 ring-sky-200 active:bg-sky-100" @click="addWater(500)">+500cc</button>
+          <button type="button" class="rounded-xl bg-slate-100 py-2.5 text-sm text-slate-600 active:bg-slate-200" @click="addWater(-100)">−100cc</button>
+        </div>
+        <p v-if="waterError" class="text-xs text-rose-600">{{ waterError }}</p>
       </div>
 
       <!-- Drink logging normal mode -->
