@@ -3,6 +3,7 @@ import { computed, inject, reactive, ref } from 'vue'
 import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE, hydrationRangeFromWeight, live } from '../data/presets.js'
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
+import { sanitizeQualitative } from '../data/labContext.js'
 
 const props = defineProps({
   labs: { type: Array, required: true }, // follow-up labs, chronological
@@ -43,7 +44,19 @@ function submit() {
     formError.value = '請選擇檢驗日期。'
     return
   }
-  const lab = { date: form.date, note: form.note || '', u_sugar: form.u_sugar, u_ketones: form.u_ketones }
+  // Urine dipstick values: normalize to the fixed scale (-, ±, + … ++++); reject anything else.
+  const qual = {}
+  for (const k of ['u_sugar', 'u_ketones']) {
+    const raw = String(form[k] ?? '').trim()
+    if (!raw) continue
+    const v = sanitizeQualitative(raw)
+    if (v == null) {
+      formError.value = '尿糖 / 尿酮請填 -、±、+、++、+++、++++（或 陰性、微量）。'
+      return
+    }
+    qual[k] = v
+  }
+  const lab = { date: form.date, note: form.note || '', u_sugar: qual.u_sugar || '', u_ketones: qual.u_ketones || '' }
   let count = 0
   for (const f of LAB_FIELDS) {
     if (form[f.key] !== '' && !Number.isNaN(Number(form[f.key]))) {
@@ -51,7 +64,7 @@ function submit() {
       count++
     }
   }
-  if (!count && !form.u_sugar && !form.u_ketones) {
+  if (!count && !qual.u_sugar && !qual.u_ketones) {
     formError.value = '請至少填寫一項檢驗數值。'
     return
   }
@@ -237,8 +250,8 @@ async function runEvaluation() {
         <div class="rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-200">
           <h3 class="text-base font-semibold text-amber-950">動態飲食解封與階段調整建議</h3>
           <p v-if="intakeStats" class="mt-1 text-xs text-amber-800">
-            近 30 天平均（{{ intakeStats.logged_days }} 天）：碳水 {{ intakeStats.avg_carbs_g }} g · 飽和脂肪
-            {{ intakeStats.avg_saturated_fat_g }} g · 飲水 {{ intakeStats.avg_hydration_cc }} cc · 運動
+            近 30 天平均（{{ intakeStats.logged_days }} 天有紀錄；各項只算有記錄該項的天數）：碳水 {{ intakeStats.avg_carbs_g }} g · 飽和脂肪
+            {{ intakeStats.avg_saturated_fat_g }} g（{{ intakeStats.macro_days }} 天）· 飲水 {{ intakeStats.avg_hydration_cc }} cc（{{ intakeStats.hydration_days }} 天）· 運動
             {{ intakeStats.avg_exercise_min }} 分
           </p>
           <p class="mt-2 text-amber-950">{{ evaluation.unlocking_summary || '尚無解封說明。' }}</p>

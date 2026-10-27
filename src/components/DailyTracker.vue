@@ -6,6 +6,8 @@ import { getGeminiKey } from '../firebase.js'
 
 const props = defineProps({
   day: { type: Object, required: true },
+  // Follow-up lab records (App state); gemini.js sanitizes them into the LAB DATA prompt block.
+  labs: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['update', 'open-settings'])
 const showToast = inject('showToast', () => {})
@@ -92,6 +94,7 @@ async function askHydrationSchedule() {
       targetMax: TARGETS.value.hydrationMax,
       drinks: drinks.value,
       currentTime: nowTime(),
+      labs: props.labs,
     })
     hydrationPattern.value = HYDRATION_PATTERN[res.pattern] || ''
     hydrationAdvice.value = String(res.advice || '').trim()
@@ -635,6 +638,7 @@ async function submitMeal(withAI) {
         tags: entry.tags,
         images: photos.value.map((p) => ({ mimeType: p.mimeType, data: p.data })),
         dayContext: ctx,
+        labs: props.labs,
       })
     } catch (err) {
       const msg = err.message || String(err)
@@ -659,6 +663,7 @@ async function submitMeal(withAI) {
         duration_min: 20,
         note: `來自餐點「${entry.analysis?.meal_name || entry.text.slice(0, 12) || '餐點'}」標籤連動`,
         source: 'meal_tag',
+        meal_id: entry.id, // removed together with the meal (removeMeal)
       })
       syncExerciseTotal(d)
     }
@@ -669,8 +674,21 @@ async function submitMeal(withAI) {
 
 function removeMeal(id) {
   commit((d) => {
-    d.meals = d.meals.filter((m) => m.id !== id)
+    const meal = (d.meals || []).find((m) => m.id === id)
+    d.meals = (d.meals || []).filter((m) => m.id !== id)
     d.ai_summary = null
+    // Remove the exercise auto-added by this meal's '[餐後踏步 20分]' tag, so deleting the meal
+    // does not leave a phantom 20-min exercise. Legacy links (no meal_id) match on time + meal name.
+    const logs = d.exercise_logs || []
+    const name = meal ? meal.analysis?.meal_name || (meal.text || '').slice(0, 12) || '餐點' : null
+    const linked = (x) =>
+      x &&
+      x.source === 'meal_tag' &&
+      (x.meal_id === id || (!x.meal_id && meal && x.time === meal.time && String(x.note || '').includes(`「${name}」`)))
+    if (logs.some(linked)) {
+      d.exercise_logs = logs.filter((x) => !linked(x))
+      syncExerciseTotal(d)
+    }
   })
   if (latestId.value === id) latestId.value = null
 }
@@ -711,6 +729,7 @@ async function runDaySummary() {
         analyzed: !!m.analysis,
       })),
       meds: props.day.meds,
+      labs: props.labs,
     })
     commit((d) => {
       d.ai_summary = result
@@ -1544,7 +1563,12 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               :title="a.title"
             />
           </div>
-          <button class="px-2 text-slate-300 active:text-rose-500" @click="removeMeal(m.id)">✕</button>
+          <button
+            type="button"
+            class="px-2 text-slate-300 active:text-rose-500"
+            :aria-label="`刪除餐點 ${m.analysis?.meal_name || m.text || '(照片)'}`"
+            @click="removeMeal(m.id)"
+          >✕</button>
         </li>
       </ul>
     </section>
@@ -1589,4 +1613,4 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       </div>
     </section>
   </div>
-</template>
+</template>

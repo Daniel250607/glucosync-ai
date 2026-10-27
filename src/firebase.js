@@ -230,6 +230,28 @@ export async function saveDay(day) {
   }
 }
 
+/**
+ * Delete ONE day's record (single date only; no bulk delete). Removes it from localStorage
+ * first, then from Firestore `days/{date}` when cloud sync is active.
+ * Returns { cloud: 'deleted' | 'skipped' | 'failed' }. On 'failed' the cloud copy still exists
+ * and loadDays() (remote wins) would bring the day back on the next load.
+ */
+export async function deleteDay(date) {
+  const key = String(date || '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw new Error('日期格式錯誤，無法刪除。')
+  const all = readLocal(DAYS_KEY)
+  delete all[key]
+  writeLocal(DAYS_KEY, all)
+  if (!isCloudReady()) return { cloud: 'skipped' }
+  try {
+    await deleteDoc(doc(db, 'days', key))
+    return { cloud: 'deleted' }
+  } catch (err) {
+    console.warn('[GlucoSync] Firestore delete failed (removed from localStorage only).', err)
+    return { cloud: 'failed' }
+  }
+}
+
 // ---------- Custom UI configuration (presets, tags, targets, medications) ----------
 // Stored in localStorage under `glucosync.customConfig` and, when Firestore is
 // configured, mirrored to the `config/custom` document. The newer `updated_at` wins.

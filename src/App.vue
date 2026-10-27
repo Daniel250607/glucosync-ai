@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import DailyTracker from './components/DailyTracker.vue'
 import TrendChart from './components/TrendChart.vue'
 import LabMilestones from './components/LabMilestones.vue'
@@ -11,6 +11,7 @@ import {
   buildBackup,
   bytesToBase64,
   decryptJson,
+  deleteDay,
   deleteQrPairing,
   emptyDay,
   encryptJson,
@@ -124,6 +125,46 @@ const userInitials = computed(() => {
   const src = String(u.displayName || u.email || '?').trim()
   return src.charAt(0).toUpperCase()
 })
+/** Header label: Firebase displayName, else the email local-part (never the full email). */
+const displayName = computed(() => {
+  const u = authUser.value
+  if (!u) return ''
+  const name = String(u.displayName || '').trim()
+  if (name) return name
+  const email = String(u.email || '').trim()
+  const at = email.indexOf('@')
+  return (at > 0 ? email.slice(0, at) : email) || '使用者'
+})
+
+// ---------- Account menu (avatar/name → popover with 登出) ----------
+const userMenuOpen = ref(false)
+const userMenuRoot = ref(null)
+const userMenuButton = ref(null)
+const signOutItem = ref(null)
+async function openUserMenu() {
+  userMenuOpen.value = true
+  await nextTick()
+  signOutItem.value?.focus()
+}
+function closeUserMenu(returnFocus = false) {
+  if (!userMenuOpen.value) return
+  userMenuOpen.value = false
+  if (returnFocus) userMenuButton.value?.focus()
+}
+function toggleUserMenu() {
+  if (userMenuOpen.value) closeUserMenu()
+  else openUserMenu()
+}
+function onDocPointerDown(e) {
+  if (userMenuOpen.value && userMenuRoot.value && !userMenuRoot.value.contains(e.target)) closeUserMenu()
+}
+function onDocKeydown(e) {
+  if (e.key === 'Escape' && userMenuOpen.value) closeUserMenu(true)
+}
+function onUserMenuFocusOut(e) {
+  // Keyboard: tabbing out of the menu closes it.
+  if (userMenuOpen.value && userMenuRoot.value && e.relatedTarget && !userMenuRoot.value.contains(e.relatedTarget)) closeUserMenu()
+}
 
 // Persist every user edit of presets / tags / targets / medications (localStorage + Firestore).
 onCustomConfigChange(() => {
@@ -137,6 +178,7 @@ async function hydrateFromStorage() {
 }
 
 function lockApp() {
+  userMenuOpen.value = false
   authUser.value = null
   days.value = {}
   labs.value = []
@@ -148,6 +190,8 @@ function lockApp() {
 }
 
 onMounted(() => {
+  document.addEventListener('pointerdown', onDocPointerDown, true)
+  document.addEventListener('keydown', onDocKeydown)
   ingestQrPairHash()
   pendingPairBanner.value = !!readPendingPair()
   onAuthStateChanged(async (user, meta) => {
@@ -165,12 +209,47 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+  document.removeEventListener('keydown', onDocKeydown)
   destroyQrPairing(true)
 })
 
 async function updateDay(day) {
   days.value = { ...days.value, [day.date]: day }
   await saveDay(day)
+}
+
+// ---------- Delete ONE day's record (danger; confirm first; no bulk delete) ----------
+const hasSelectedDayRecord = computed(() => Object.prototype.hasOwnProperty.call(days.value, selectedDate.value))
+const deletingDay = ref(false)
+async function deleteSelectedDay() {
+  const date = selectedDate.value
+  const d = days.value[date]
+  if (!d || deletingDay.value) return
+  const meals = (d.meals || []).length
+  const drinks = (d.drinks || []).length
+  const ex = (d.exercise_logs || []).length
+  const ok = window.confirm(
+    `⚠️ 確定要刪除 ${date} 這一天的所有紀錄？\n\n` +
+      `餐點 ${meals} 筆、飲品 ${drinks} 筆、運動 ${ex} 筆、飲水 ${Number(d.hydration_cc) || 0} cc、用藥勾選與 AI 總結都會一併刪除` +
+      `${isCloudReady() ? '（本機與雲端 Firestore）' : '（本機）'}。\n\n此動作無法復原。建議先到設定匯出備份。`,
+  )
+  if (!ok) return
+  deletingDay.value = true
+  try {
+    const { [date]: _removed, ...rest } = days.value
+    days.value = rest
+    const res = await deleteDay(date)
+    showToast(
+      res.cloud === 'failed'
+        ? `已刪除 ${date} 的本機紀錄，但雲端刪除失敗；下次同步時可能會恢復，請確認網路與 Firestore 權限後再刪一次。`
+        : `🗑️ 已刪除 ${date} 的紀錄`,
+    )
+  } catch (err) {
+    showToast(err.message || String(err))
+  } finally {
+    deletingDay.value = false
+  }
 }
 
 async function addLab(lab) {
@@ -251,6 +330,7 @@ async function handleSignIn() {
 
 async function handleSignOut() {
   if (authBusy.value) return
+  closeUserMenu()
   authBusy.value = true
   try {
     await signOutUser()
@@ -770,33 +850,67 @@ const qrCountdownLabel = computed(() => {
     <header class="sticky top-0 z-20 bg-teal-700 text-white shadow">
       <div class="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3">
         <div class="min-w-0 flex-1">
-          <h1 class="truncate text-base font-bold sm:text-lg">GlucoSync｜AI 控糖降脂健康儀表板</h1>
-          <p class="text-xs text-teal-100">
-            {{ today }} ·
+          <div class="flex min-w-0 items-center gap-2 whitespace-nowrap">
+            <h1 class="min-w-0 truncate text-base font-bold sm:text-lg">
+              <span class="sm:hidden">GlucoSync</span>
+              <span class="hidden sm:inline">GlucoSync｜AI 控糖降脂健康儀表板</span>
+            </h1>
             <span
-              class="ml-0.5 rounded-full px-1.5 py-0.5 text-[10px] sm:text-xs"
+              class="shrink-0 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] sm:text-xs"
               :class="synced ? 'bg-emerald-400/25 text-emerald-50' : 'bg-white/10 text-teal-50'"
             >{{ syncBadge }}</span>
-          </p>
+          </div>
+          <p class="whitespace-nowrap text-xs text-teal-100">{{ today }}</p>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
-          <img
-            v-if="authUser.photoURL"
-            :src="authUser.photoURL"
-            alt=""
-            class="size-8 rounded-full object-cover ring-1 ring-white/40"
-            referrerpolicy="no-referrer"
-          />
-          <span
-            v-else
-            class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold"
-          >{{ userInitials }}</span>
-          <span class="max-w-[7rem] truncate text-[10px] text-teal-50 sm:max-w-[11rem] sm:text-xs">{{ authUser.email }}</span>
-          <button
-            class="rounded-full bg-white/15 px-2.5 py-1.5 text-xs active:bg-white/25 disabled:opacity-60"
-            :disabled="authBusy"
-            @click="handleSignOut"
-          >登出</button>
+          <div ref="userMenuRoot" class="relative" @focusout="onUserMenuFocusOut">
+            <button
+              ref="userMenuButton"
+              type="button"
+              class="flex items-center gap-1.5 rounded-full py-1 pl-1 pr-2 hover:bg-white/10 active:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
+              aria-haspopup="menu"
+              :aria-expanded="userMenuOpen ? 'true' : 'false'"
+              aria-controls="user-menu"
+              :aria-label="`帳號選單：${displayName}`"
+              @click="toggleUserMenu"
+              @keydown.down.prevent="openUserMenu"
+            >
+              <img
+                v-if="authUser.photoURL"
+                :src="authUser.photoURL"
+                alt=""
+                class="size-8 rounded-full object-cover ring-1 ring-white/40"
+                referrerpolicy="no-referrer"
+              />
+              <span
+                v-else
+                class="grid size-8 place-items-center rounded-full bg-white/20 text-sm font-semibold"
+                aria-hidden="true"
+              >{{ userInitials }}</span>
+              <span class="max-w-[5.5rem] truncate whitespace-nowrap text-xs font-medium text-teal-50 sm:max-w-[10rem]">{{ displayName }}</span>
+              <span class="text-[10px] text-teal-100" aria-hidden="true">▾</span>
+            </button>
+            <div
+              v-if="userMenuOpen"
+              id="user-menu"
+              role="menu"
+              aria-label="帳號選單"
+              class="absolute right-0 top-full z-30 mt-2 w-56 rounded-xl bg-white p-1 text-slate-700 shadow-lg ring-1 ring-slate-200"
+            >
+              <div class="px-3 py-2 text-xs text-slate-500" role="none">
+                <p class="truncate font-medium text-slate-800">{{ displayName }}</p>
+                <p class="truncate">{{ authUser.email }}</p>
+              </div>
+              <button
+                ref="signOutItem"
+                type="button"
+                role="menuitem"
+                class="w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-slate-100 focus:bg-slate-100 focus:outline-none disabled:opacity-60"
+                :disabled="authBusy"
+                @click="handleSignOut"
+              >🚪 登出</button>
+            </div>
+          </div>
           <button
             class="grid size-11 place-items-center rounded-full bg-white/10 text-xl active:bg-white/20"
             aria-label="設定"
@@ -859,8 +973,18 @@ const qrCountdownLabel = computed(() => {
                 @click="resetToToday"
               >↩ 回到今天</button>
             </div>
+            <div v-if="hasSelectedDayRecord" class="mt-2 flex justify-end">
+              <button
+                type="button"
+                data-testid="delete-day"
+                class="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-rose-300 hover:bg-rose-50 active:bg-rose-100 disabled:opacity-50"
+                :disabled="deletingDay"
+                :aria-label="`刪除 ${selectedDate} 這天的紀錄`"
+                @click="deleteSelectedDay"
+              >🗑️ 刪除這天的紀錄</button>
+            </div>
           </section>
-          <DailyTracker :day="currentDay" @update="updateDay" @open-settings="openSettings" />
+          <DailyTracker :day="currentDay" :labs="labs" @update="updateDay" @open-settings="openSettings" />
         </div>
         <TrendChart v-show="tab === 'trend'" :days="days" />
         <LabMilestones

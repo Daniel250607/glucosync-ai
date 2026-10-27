@@ -46,10 +46,73 @@ const charts = { macro: null, water: null, exercise: null }
 
 const series = computed(() => {
   const keys = Object.keys(props.days).sort().slice(-range.value)
-  return keys.map((k) => summarizeDay(props.days[k]))
+  return keys.map((k) => withFlags(props.days[k]))
 })
 
-function compliance(rows, test) {
+/**
+ * summarizeDay + "was this metric actually logged?" flags. A missing value is NOT a zero:
+ * - macro: only days with >= 1 AI-analyzed meal
+ * - water: hydration_cc > 0 or any drink logged
+ * - exercise: any exercise log or legacy exercise_min > 0
+ * Days without the metric are drawn as gaps and excluded from that metric's compliance.
+ */
+function withFlags(raw) {
+  const day = raw || {}
+  const s = summarizeDay(day)
+  const mealsAnalyzed = (day.meals || []).filter((m) => m && m.analysis).length
+  const hasWater = s.hydration_cc > 0 || (day.drinks || []).some((d) => d && d.name)
+  const hasExerciseLog = (day.exercise_logs || []).length > 0 || Number(day.exercise_min) > 0
+  return { ...s, meals_analyzed: mealsAnalyzed, has_water: hasWater, has_exercise: hasExerciseLog, raw: day }
+}
+
+// ---------- Colors (single source for bars, legend and footnote) ----------
+const COLORS = {
+  carbsOk: 'rgba(251,146,60,0.85)', // orange: inside carbsMin–carbsMax
+  carbsHigh: 'rgba(244,63,94,0.8)', // red: > carbsMax
+  carbsLow: 'rgba(234,179,8,0.9)', // yellow: < carbsMin (ketoacidosis risk on [REDACTED])
+  exMet: '#0d9488', // dark teal: goal met
+  exUnmet: 'rgba(13,148,136,0.4)', // light teal: goal not met
+}
+
+// Per-chart "has data" flags for empty-data notes.
+const hasMacroData = computed(() => series.value.some((d) => d.meals_analyzed > 0))
+const hasWaterData = computed(() => series.value.some((d) => d.has_water))
+const hasExerciseData = computed(() => series.value.some((d) => d.has_exercise))
+
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
+function fullDateLabel(date) {
+  const d = new Date(`${date}T00:00:00`)
+  return Number.isNaN(d.getTime()) ? date : `${date}（週${WEEKDAYS[d.getDay()]}）`
+}
+const fmtNum = (v) => (Math.round((Number(v) || 0) * 10) / 10).toLocaleString('zh-TW')
+
+function carbStatus(d, t) {
+  if (!d.meals_analyzed) return '未記錄'
+  if (d.carbs_g > t.carbsMax) return `超標 > ${t.carbsMax} g`
+  if (d.carbs_g < t.carbsMin) return `過低 < ${t.carbsMin} g`
+  return '範圍內'
+}
+function satStatus(d, t) {
+  if (!d.meals_analyzed) return '未記錄'
+  if (d.saturated_fat_g > t.satFatMax) return `超過上限 ${t.satFatMax} g`
+  if (d.saturated_fat_g > t.satFatMin) return `超過建議 ${t.satFatMin} g`
+  return '建議範圍內'
+}
+function waterStatus(d, t) {
+  if (!d.has_water) return '未記錄'
+  if (d.hydration_cc < t.hydrationMin) return `低於下限（差 ${t.hydrationMin - d.hydration_cc} cc）`
+  if (d.hydration_cc > t.hydrationMax) return '高於上限'
+  return '安全區內'
+}
+function exStatus(d, t) {
+  if (!d.has_exercise) return '未記錄'
+  const m = d.exercise_min || 0
+  return m >= t.exerciseTarget ? '達標' : `未達標（差 ${t.exerciseTarget - m} 分）`
+}
+
+/** Compliance over days where the metric was logged (`has`); no-data days count as neither pass nor fail. */
+function compliance(allRows, test, has) {
+  const rows = allRows.filter(has)
   const total = rows.length
   if (!total) return { pct: null, hit: 0, total: 0 }
   const hit = rows.filter(test).length
@@ -61,37 +124,41 @@ const scorecards = computed(() => {
   const curr = series.value
   const prev = keys
     .slice(Math.max(0, keys.length - range.value * 2), Math.max(0, keys.length - range.value))
-    .map((k) => summarizeDay(props.days[k]))
+    .map((k) => withFlags(props.days[k]))
   const t = live.targets
   const defs = [
     {
       id: 'carbs',
       label: '碳水安全',
       hint: `${t.carbsMin}–${t.carbsMax} g`,
+      has: (d) => d.meals_analyzed > 0,
       test: (d) => d.carbs_g >= t.carbsMin && d.carbs_g <= t.carbsMax,
     },
     {
       id: 'sat',
       label: '飽和脂肪',
       hint: `≤ ${t.satFatMax} g`,
+      has: (d) => d.meals_analyzed > 0,
       test: (d) => d.saturated_fat_g <= t.satFatMax,
     },
     {
       id: 'water',
       label: '飲水',
       hint: `≥ ${t.hydrationMin} cc`,
+      has: (d) => d.has_water,
       test: (d) => d.hydration_cc >= t.hydrationMin,
     },
     {
       id: 'ex',
       label: '運動',
       hint: `≥ ${t.exerciseTarget} 分`,
+      has: (d) => d.has_exercise,
       test: (d) => d.exercise_min >= t.exerciseTarget,
     },
   ]
   return defs.map((def) => {
-    const now = compliance(curr, def.test)
-    const before = compliance(prev, def.test)
+    const now = compliance(curr, def.test, def.has)
+    const before = compliance(prev, def.test, def.has)
     // Compare whenever the previous period has at least one recorded day (day counts may differ).
     const delta = before.total > 0 && now.pct != null && before.pct != null ? now.pct - before.pct : null
     let badge = '尚無對照'
@@ -120,22 +187,24 @@ function scrollToChart(id) {
   if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+const EX_SOURCE = { meal_tag: '（餐點標籤連動）' }
 function exerciseExtras(day) {
   const lines = []
-  const logs = (day.exercise_logs || []).filter((e) => e && (e.type || Number(e.duration_min) || Number(e.reps)))
+  const rawLogs = day.raw?.exercise_logs || day.exercise_logs || []
+  const logs = rawLogs.filter((e) => e && (e.type || Number(e.duration_min) || Number(e.reps)))
   if (logs.length) {
     lines.push(
       `🏃 ${logs.map((e) => {
         const reps = Number(e.reps) || 0
         if (e.mode === 'reps' || reps > 0) {
           const sets = Number(e.sets) || 1
-          return `${e.type || '運動'} ${reps}下(${sets}組) ${Number(e.duration_min) || 0}m`
+          return `${e.type || '運動'} ${reps}下(${sets}組) ${Number(e.duration_min) || 0}m${EX_SOURCE[e.source] || ''}`
         }
-        return `${e.type || '運動'} ${Number(e.duration_min) || 0}m`
+        return `${e.type || '運動'} ${Number(e.duration_min) || 0}m${EX_SOURCE[e.source] || ''}${e.time ? ` @${e.time}` : ''}`
       }).join(', ')}`,
     )
   } else if (day.exercise_min > 0) {
-    lines.push(`🏃 運動 ${day.exercise_min}m`)
+    lines.push(`🏃 運動 ${day.exercise_min}m（舊版 exercise_min 欄位，無明細）`)
   }
   return lines
 }
@@ -172,19 +241,27 @@ function buildMacroData() {
       {
         type: 'bar',
         label: '碳水 (g)',
-        data: s.map((d) => d.carbs_g),
+        tipName: '碳水',
+        unit: 'g',
+        tipStatus: s.map((d) => carbStatus(d, TARGETS)),
+        data: s.map((d) => (d.meals_analyzed ? d.carbs_g : null)), // null = not logged (no bar)
         yAxisID: 'yG',
         backgroundColor: s.map((d) =>
-          d.carbs_g && (d.carbs_g < TARGETS.carbsMin || d.carbs_g > TARGETS.carbsMax)
-            ? 'rgba(244,63,94,0.75)'
-            : 'rgba(251,146,60,0.8)',
+          !d.meals_analyzed ? COLORS.carbsOk : d.carbs_g > TARGETS.carbsMax ? COLORS.carbsHigh : d.carbs_g < TARGETS.carbsMin ? COLORS.carbsLow : COLORS.carbsOk,
         ),
+        // One legend entry per conditional color (all toggle this same dataset).
+        legendItems: [
+          { text: `碳水 (範圍內 ${TARGETS.carbsMin}–${TARGETS.carbsMax} g)`, color: COLORS.carbsOk },
+          { text: `碳水超標 (> ${TARGETS.carbsMax} g)`, color: COLORS.carbsHigh },
+          { text: `碳水過低 (< ${TARGETS.carbsMin} g)`, color: COLORS.carbsLow },
+        ],
         borderRadius: 4,
         order: 5,
       },
       {
         type: 'line',
-        label: `碳水上限 ${TARGETS.carbsMax}g`,
+        label: `碳水上限 ${TARGETS.carbsMax} g`,
+        isThreshold: true,
         data: flat(TARGETS.carbsMax),
         yAxisID: 'yG',
         borderColor: 'rgba(234,88,12,0.9)',
@@ -195,7 +272,8 @@ function buildMacroData() {
       },
       {
         type: 'line',
-        label: `碳水下限 ${TARGETS.carbsMin}g (防酮酸)`,
+        label: `碳水下限 ${TARGETS.carbsMin} g (防酮酸)`,
+        isThreshold: true,
         data: flat(TARGETS.carbsMin),
         yAxisID: 'yG',
         borderColor: 'rgba(161,98,7,0.9)',
@@ -207,7 +285,11 @@ function buildMacroData() {
       {
         type: 'line',
         label: '飽和脂肪 (g)',
-        data: s.map((d) => d.saturated_fat_g),
+        tipName: '飽和脂肪',
+        unit: 'g',
+        tipStatus: s.map((d) => satStatus(d, TARGETS)),
+        data: s.map((d) => (d.meals_analyzed ? d.saturated_fat_g : null)),
+        spanGaps: false, // do not draw a line through unlogged days
         yAxisID: 'ySat',
         borderColor: '#7c3aed',
         backgroundColor: '#7c3aed',
@@ -218,7 +300,8 @@ function buildMacroData() {
       },
       {
         type: 'line',
-        label: `飽和脂肪上限 ${TARGETS.satFatMax}g`,
+        label: `飽和脂肪上限 ${TARGETS.satFatMax} g`,
+        isThreshold: true,
         data: flat(TARGETS.satFatMax),
         yAxisID: 'ySat',
         borderColor: 'rgba(220,38,38,0.9)',
@@ -229,7 +312,8 @@ function buildMacroData() {
       },
       {
         type: 'line',
-        label: `飽和脂肪建議 ${TARGETS.satFatMin}g`,
+        label: `飽和脂肪建議 ≤ ${TARGETS.satFatMin} g`,
+        isThreshold: true,
         data: flat(TARGETS.satFatMin),
         yAxisID: 'ySat',
         borderColor: 'rgba(124,58,237,0.5)',
@@ -252,7 +336,11 @@ function buildWaterData() {
       {
         type: 'line',
         label: '飲水 (cc)',
-        data: s.map((d) => d.hydration_cc),
+        tipName: '飲水',
+        unit: 'cc',
+        tipStatus: s.map((d) => waterStatus(d, TARGETS)),
+        data: s.map((d) => (d.has_water ? d.hydration_cc : null)),
+        spanGaps: false,
         yAxisID: 'yWater',
         borderColor: 'rgba(14,165,233,0.8)',
         backgroundColor: 'rgba(14,165,233,0.15)',
@@ -265,7 +353,8 @@ function buildWaterData() {
       },
       {
         type: 'line',
-        label: `飲水下限 ${TARGETS.hydrationMin}`,
+        label: `飲水下限 ${TARGETS.hydrationMin} cc`,
+        isThreshold: true,
         data: flat(TARGETS.hydrationMin),
         yAxisID: 'yWater',
         borderColor: 'rgba(14,165,233,0.35)',
@@ -277,7 +366,8 @@ function buildWaterData() {
       },
       {
         type: 'line',
-        label: `飲水上限 ${TARGETS.hydrationMax}`,
+        label: `飲水上限 ${TARGETS.hydrationMax} cc（淺藍帶＝安全區）`,
+        isThreshold: true,
         data: flat(TARGETS.hydrationMax),
         yAxisID: 'yWater',
         borderColor: 'rgba(14,165,233,0.35)',
@@ -302,17 +392,23 @@ function buildExerciseData() {
       {
         type: 'bar',
         label: '運動 (分)',
-        data: s.map((d) => d.exercise_min || 0),
+        tipName: '運動',
+        unit: '分',
+        tipStatus: s.map((d) => exStatus(d, TARGETS)),
+        data: s.map((d) => (d.has_exercise ? d.exercise_min || 0 : null)),
         yAxisID: 'yEx',
-        backgroundColor: s.map((d) =>
-          (d.exercise_min || 0) >= TARGETS.exerciseTarget ? '#0d9488' : 'rgba(13,148,136,0.45)',
-        ),
+        backgroundColor: s.map((d) => ((d.exercise_min || 0) >= TARGETS.exerciseTarget ? COLORS.exMet : COLORS.exUnmet)),
+        legendItems: [
+          { text: `運動 (達標 ≥ ${TARGETS.exerciseTarget} 分)`, color: COLORS.exMet },
+          { text: `運動 (未達標 < ${TARGETS.exerciseTarget} 分)`, color: COLORS.exUnmet },
+        ],
         borderRadius: 4,
         order: 2,
       },
       {
         type: 'line',
         label: `運動目標 ${TARGETS.exerciseTarget} 分`,
+        isThreshold: true,
         data: flat(TARGETS.exerciseTarget),
         yAxisID: 'yEx',
         borderColor: 'rgba(15,118,110,0.9)',
@@ -325,6 +421,19 @@ function buildExerciseData() {
   }
 }
 
+/** Legend: expand datasets that declare `legendItems` into one entry per conditional color. */
+function legendLabels(chart) {
+  // Chart.js orders legend entries by draw `order`; list them by dataset instead (main series first, then its limits).
+  const base = Chart.defaults.plugins.legend.labels
+    .generateLabels(chart)
+    .sort((x, y) => x.datasetIndex - y.datasetIndex)
+  return base.flatMap((item) => {
+    const ds = chart.data.datasets[item.datasetIndex]
+    if (!ds || !Array.isArray(ds.legendItems)) return [item]
+    return ds.legendItems.map((li) => ({ ...item, text: li.text, fillStyle: li.color, strokeStyle: li.color, lineWidth: 0 }))
+  })
+}
+
 function baseOptions(extraKind, scales) {
   return {
     responsive: true,
@@ -333,10 +442,24 @@ function baseOptions(extraKind, scales) {
     plugins: {
       legend: {
         position: 'bottom',
-        labels: { boxWidth: 12, font: { size: 11 } },
+        labels: { boxWidth: 10, padding: 8, font: { size: 11 }, generateLabels: legendLabels },
+        // Default onClick toggles legendItem.datasetIndex, so every color entry of a bar dataset toggles that dataset.
       },
       tooltip: {
+        // Threshold lines are constant and already named in the legend; keep the tooltip to real values.
+        filter: (item) => !item.dataset.isThreshold,
+        itemSort: (a, b) => a.datasetIndex - b.datasetIndex, // carbs first, then sat fat
         callbacks: {
+          title(items) {
+            const d = items && items[0] ? series.value[items[0].dataIndex] : null
+            return d ? fullDateLabel(d.date) : ''
+          },
+          label(ctx) {
+            const ds = ctx.dataset
+            const status = Array.isArray(ds.tipStatus) ? ds.tipStatus[ctx.dataIndex] : ''
+            if (status === '未記錄' || ctx.raw == null) return `${ds.tipName || ds.label}：未記錄`
+            return `${ds.tipName || ds.label}：${fmtNum(ctx.raw)} ${ds.unit || ''}${status ? `（${status}）` : ''}`
+          },
           afterBody(items) {
             if (!extraKind) return []
             const index = items && items[0] ? items[0].dataIndex : -1
@@ -345,7 +468,7 @@ function baseOptions(extraKind, scales) {
         },
       },
     },
-    scales: { x: { grid: { display: false } }, ...scales },
+    scales: { x: { grid: { display: false }, title: { display: true, text: '日期 (月-日)', font: { size: 10 } } }, ...scales },
   }
 }
 
@@ -388,7 +511,7 @@ function buildExerciseOptions() {
       position: 'left',
       beginAtZero: true,
       suggestedMax: 60,
-      title: { display: true, text: '運動 (分)' },
+      title: { display: true, text: '運動 (分鐘)' },
     },
   })
 }
@@ -473,7 +596,7 @@ onBeforeUnmount(() => {
         <p class="text-xs text-slate-500">{{ card.label }}</p>
         <div class="mt-1 flex items-end justify-between gap-1">
           <p class="text-2xl font-semibold tabular-nums text-slate-800">{{ card.pct == null ? '—' : card.pct + '%' }}</p>
-          <span class="rounded-full px-2 py-0.5 text-[11px] font-medium" :class="card.badgeClass" :title="'較前一段 ' + range + ' 天'">
+          <span class="rounded-full px-2 py-0.5 text-[11px] font-medium" :class="card.badgeClass" :title="'較前一段 ' + range + ' 天（百分點）'">
             {{ card.badge }}
           </span>
         </div>
@@ -485,21 +608,46 @@ onBeforeUnmount(() => {
     </p>
     <div :class="{ hidden: !series.length }">
       <div ref="macroSection" class="mt-4 scroll-mt-24 sm:scroll-mt-32" data-chart="macro">
-        <h3 class="text-sm font-medium text-slate-700">🍚 碳水與飽和脂肪</h3>
-        <div class="mt-2 h-72 sm:h-80"><canvas ref="macroCanvas" /></div>
+        <h3 class="text-sm font-medium text-slate-700">🍚 碳水與飽和脂肪 <span class="text-xs font-normal text-slate-400">(g/日)</span></h3>
+        <p v-if="!hasMacroData" class="mt-1 text-xs text-slate-400">此期間尚無已分析的餐點，碳水與飽和脂肪無資料。</p>
+        <div class="mt-2 h-[26rem] sm:h-96"><canvas ref="macroCanvas" role="img" aria-label="碳水與飽和脂肪趨勢圖" /></div>
       </div>
       <div ref="waterSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="water">
-        <h3 class="text-sm font-medium text-slate-700">💧 飲水</h3>
-        <div class="mt-2 h-56 sm:h-64"><canvas ref="waterCanvas" /></div>
+        <h3 class="text-sm font-medium text-slate-700">💧 飲水 <span class="text-xs font-normal text-slate-400">(cc/日)</span></h3>
+        <p v-if="!hasWaterData" class="mt-1 text-xs text-slate-400">此期間尚無飲水紀錄。</p>
+        <div class="mt-2 h-72 sm:h-72"><canvas ref="waterCanvas" role="img" aria-label="飲水趨勢圖" /></div>
       </div>
       <div ref="exerciseSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="exercise">
-        <h3 class="text-sm font-medium text-slate-700">🏃 運動</h3>
-        <div class="mt-2 h-56 sm:h-64"><canvas ref="exerciseCanvas" /></div>
+        <h3 class="text-sm font-medium text-slate-700">🏃 運動 <span class="text-xs font-normal text-slate-400">(分鐘/日)</span></h3>
+        <p v-if="!hasExerciseData" class="mt-1 text-xs text-slate-400">此期間尚無運動紀錄。</p>
+        <div class="mt-2 h-72 sm:h-72"><canvas ref="exerciseCanvas" role="img" aria-label="運動趨勢圖" /></div>
       </div>
     </div>
-    <p class="mt-2 text-xs text-slate-400">
-      碳水下限用於避免過低碳水 ([REDACTED] + 酮體風險)；飽和脂肪嚴格上限 {{ live.targets.satFatMin }}-{{ live.targets.satFatMax }}g；飲水安全區
-      {{ live.targets.hydrationMin }}-{{ live.targets.hydrationMax }}cc；運動長條為當日運動累計分鐘數 (目標 ≥ {{ live.targets.exerciseTarget }} 分)。
-    </p>
+    <div v-if="series.length" class="mt-3 space-y-1 text-xs text-slate-500" data-legend-notes>
+      <p class="font-medium text-slate-600">圖例說明</p>
+      <p>
+        🍚 碳水長條：<span class="legend-dot" :style="{ background: COLORS.carbsOk }"></span>橘＝範圍內 {{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} g、
+        <span class="legend-dot" :style="{ background: COLORS.carbsHigh }"></span>紅＝超標（&gt; {{ live.targets.carbsMax }} g）、
+        <span class="legend-dot" :style="{ background: COLORS.carbsLow }"></span>黃＝過低（&lt; {{ live.targets.carbsMin }} g，[REDACTED] 酮酸風險）；無長條／斷線＝當天未記錄（不算 0，也不計入達成率）。
+      </p>
+      <p>🟣 飽和脂肪紫線（右軸）：淡紫虛線＝建議 ≤ {{ live.targets.satFatMin }} g、紅虛線＝上限 {{ live.targets.satFatMax }} g。</p>
+      <p>💧 飲水：藍色面積＝當日飲水量；淺藍帶＝安全區 {{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} cc（依體重 {{ live.targets.userWeight }} kg，下限不低於 2000 cc）。</p>
+      <p>
+        🏃 運動長條（當日累計分鐘）：<span class="legend-dot" :style="{ background: COLORS.exMet }"></span>深綠＝達標 ≥ {{ live.targets.exerciseTarget }} 分、
+        <span class="legend-dot" :style="{ background: COLORS.exUnmet }"></span>淺綠＝未達標。
+      </p>
+      <p>達成率只計算「有記錄該項目」的天數；徽章 ▲/▼＝與前一段 {{ range }} 天相比的變化（百分點）。點圖例可隱藏/顯示該資料。</p>
+    </div>
   </section>
 </template>
+
+<style scoped>
+.legend-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin: 0 0.2rem 0 0.1rem;
+  border-radius: 2px;
+  vertical-align: -0.05rem;
+}
+</style>
