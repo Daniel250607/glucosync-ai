@@ -4,13 +4,18 @@ import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE, hydrationRangeFromWeight,
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
 import { sanitizeQualitative } from '../data/labContext.js'
+import LabTrendChart from './LabTrendChart.vue'
+import ClinicReport from './ClinicReport.vue'
 
 const props = defineProps({
   labs: { type: Array, required: true }, // follow-up labs, chronological
   days: { type: Object, required: true },
+  patientName: { type: String, default: '' },
 })
 const emit = defineEmits(['add-lab', 'open-settings', 'apply-targets'])
 const showToast = inject('showToast', () => {})
+
+const reportOpen = ref(false)
 
 const latest = computed(() => (props.labs.length ? props.labs[props.labs.length - 1] : null))
 
@@ -135,7 +140,17 @@ async function runEvaluation() {
   <div class="space-y-4">
     <!-- Baseline vs targets -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <h2 class="font-semibold text-slate-800">🧪 檢驗里程碑</h2>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-semibold text-slate-800">🧪 檢驗里程碑</h2>
+        <button
+          type="button"
+          class="min-h-11 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white active:bg-teal-700"
+          data-testid="open-report"
+          @click="reportOpen = true"
+        >
+          🩺 回診報告匯出
+        </button>
+      </div>
       <p class="text-xs text-slate-500">
         基準日 {{ BASELINE_DATE }}（115/09/05）· 追蹤目標：11-12 個月後
         <span v-if="latest"> · 最新追蹤 {{ latest.date }}</span>
@@ -181,6 +196,9 @@ async function runEvaluation() {
         </table>
       </div>
     </section>
+
+    <!-- Lab trend charts -->
+    <LabTrendChart :labs="labs" />
 
     <!-- Entry form -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -312,5 +330,6 @@ async function runEvaluation() {
         <p class="text-xs text-slate-400">AI 建議僅供參考，不能取代醫師診斷；用藥調整請與醫師討論。</p>
       </div>
     </section>
+    <ClinicReport v-if="reportOpen" :days="days" :labs="labs" :patient-name="patientName" @close="reportOpen = false" />
   </div>
 </template>

@@ -4,3 +4,32 @@ html,
 body {
   -webkit-tap-highlight-color: transparent;
 }
+
+/* Clinic report print view: only the report is printed; the app behind it is hidden. */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  body.gs-report-open > *:not(.gs-report-print) {
+    display: none !important;
+  }
+  body.gs-report-open .gs-report-print {
+    position: static !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body.gs-report-open .no-print {
+    display: none !important;
+  }
+  body.gs-report-open .report-sheet {
+    box-shadow: none !important;
+    margin: 0 !important;
+    max-width: none !important;
+    padding: 0 !important;
+  }
+  body.gs-report-open {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

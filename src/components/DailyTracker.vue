@@ -3,6 +3,7 @@ import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
 import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, summarizeDay, summarizeDayAI } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
+import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
 
 const props = defineProps({
   day: { type: Object, required: true },
@@ -22,6 +23,78 @@ function commit(mutator) {
 function nowTime() {
   return new Date().toTimeString().slice(0, 5)
 }
+function uid(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// ---------- undo snackbar (one-tap adds) ----------
+// Only the most recent one-tap action can be undone; the bar disappears after ~6 s, when the
+// selected date changes, or when the component unmounts. The undo is bound to the date it was made on.
+const UNDO_MS = 6000
+const undoBar = ref(null) // { key, text, date, undo }
+let undoTimer = null
+function dismissUndo() {
+  clearTimeout(undoTimer)
+  undoTimer = null
+  undoBar.value = null
+}
+function offerUndo(text, undo) {
+  clearTimeout(undoTimer)
+  undoBar.value = { key: uid('undo'), text, date: props.day.date, undo }
+  undoTimer = setTimeout(dismissUndo, UNDO_MS)
+}
+function runUndo() {
+  const u = undoBar.value
+  dismissUndo()
+  if (!u || u.date !== props.day.date || typeof u.undo !== 'function') return
+  u.undo()
+}
+watch(() => props.day.date, dismissUndo)
+onBeforeUnmount(dismissUndo)
+
+// ---------- sick day (身體不適) ----------
+const sickInfo = computed(() => sanitizeSick(props.day.sick))
+const sickHighRisk = computed(() => isHighRiskSick(props.day.sick))
+const sickEditing = ref(false)
+const sickForm = reactive({ symptoms: [], note: '' })
+const sickError = ref('')
+function openSickEditor() {
+  const cur = sickInfo.value
+  sickForm.symptoms = cur ? [...cur.symptoms] : []
+  sickForm.note = cur ? cur.note : ''
+  sickError.value = ''
+  sickEditing.value = true
+}
+function toggleSickSymptom(key) {
+  const i = sickForm.symptoms.indexOf(key)
+  if (i >= 0) sickForm.symptoms.splice(i, 1)
+  else sickForm.symptoms.push(key)
+}
+function saveSick() {
+  const rec = sanitizeSick({ symptoms: sickForm.symptoms, note: sickForm.note, time: sickInfo.value?.time || nowTime() })
+  if (!rec) {
+    sickError.value = '請至少選擇一個症狀，或在「其他」填寫說明。'
+    return
+  }
+  if (sickForm.symptoms.includes('other') && !rec.note) {
+    sickError.value = '選擇「其他」時請簡短說明症狀。'
+    return
+  }
+  commit((d) => {
+    d.sick = rec
+  })
+  sickEditing.value = false
+}
+function clearSick() {
+  if (!window.confirm('確定要清除今天的身體不適紀錄？')) return
+  commit((d) => {
+    delete d.sick
+  })
+  sickEditing.value = false
+}
+watch(() => props.day.date, () => {
+  sickEditing.value = false
+})
 
 // ---------- hydration & drinks ----------
 const TARGETS = computed(() => live.targets)
@@ -59,8 +132,19 @@ const hydrationAdviceLoading = ref(false)
 const hydrationAdviceError = ref('')
 
 function addWater(cc) {
+  let applied = 0
   commit((d) => {
-    d.hydration_cc = Math.max(0, (d.hydration_cc || 0) + cc)
+    const before = Math.max(0, Number(d.hydration_cc) || 0)
+    d.hydration_cc = Math.max(0, before + cc)
+    applied = d.hydration_cc - before // actual change after clamping at 0
+  })
+  if (!applied) return
+  offerUndo(applied > 0 ? `已記錄 純水 +${applied}cc` : `已扣除 純水 ${applied}cc`, () => {
+    commit((d) => {
+      const cur = Math.max(0, Number(d.hydration_cc) || 0)
+      // Reverse exactly the applied amount (never below 0 if the value changed meanwhile).
+      d.hydration_cc = Math.max(0, cur - applied)
+    })
   })
 }
 
@@ -95,6 +179,7 @@ async function askHydrationSchedule() {
       drinks: drinks.value,
       currentTime: nowTime(),
       labs: props.labs,
+      sick: props.day.sick || null,
     })
     hydrationPattern.value = HYDRATION_PATTERN[res.pattern] || ''
     hydrationAdvice.value = String(res.advice || '').trim()
@@ -296,7 +381,7 @@ function addExerciseLog(quickMin = null) {
       return
     }
     entry = {
-      id: `ex-${Date.now()}`,
+      id: uid('ex'),
       time: nowTime(),
       type,
       mode: 'reps',
@@ -313,7 +398,7 @@ function addExerciseLog(quickMin = null) {
       return
     }
     entry = {
-      id: `ex-${Date.now()}`,
+      id: uid('ex'),
       time: nowTime(),
       type,
       mode: 'duration',
@@ -342,6 +427,13 @@ function addExerciseLog(quickMin = null) {
     syncExerciseTotal(d)
   })
   exerciseForm.note = ''
+  const amount = entry.mode === 'reps' ? `${entry.reps} 下` : `${entry.duration_min} 分`
+  const entryId = entry.id
+  offerUndo(`已記錄 ${entry.type} ${amount}`, () => {
+    // Remove exactly that entry (by its unique id); no-op if it was already deleted.
+    if (!(props.day.exercise_logs || []).some((x) => x && x.id === entryId)) return
+    removeExerciseLog(entryId)
+  })
 }
 
 function removeExerciseLog(id) {
@@ -767,6 +859,86 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
 
 <template>
   <div class="space-y-4">
+    <!-- Sick day (身體不適) -->
+    <section
+      class="rounded-2xl p-4 shadow-sm ring-1"
+      :class="sickInfo ? 'bg-rose-50 ring-rose-200' : 'bg-white ring-slate-200'"
+      data-testid="sick-section"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-semibold text-slate-800">{{ sickInfo ? '🤒 身體不適紀錄' : '🩺 身體狀況' }}</h2>
+        <div class="flex gap-2">
+          <button
+            v-if="!sickInfo && !sickEditing"
+            type="button"
+            class="min-h-11 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white active:bg-rose-700"
+            data-testid="sick-open"
+            @click="openSickEditor"
+          >
+            🤒 今天不舒服
+          </button>
+          <template v-else-if="sickInfo && !sickEditing">
+            <button type="button" class="min-h-11 rounded-xl bg-white px-3 py-2 text-sm text-rose-700 ring-1 ring-rose-200" @click="openSickEditor">✏️ 編輯</button>
+            <button type="button" class="min-h-11 rounded-xl bg-white px-3 py-2 text-sm text-slate-600 ring-1 ring-slate-200" data-testid="sick-clear" @click="clearSick">已好轉，清除</button>
+          </template>
+        </div>
+      </div>
+
+      <div v-if="sickEditing" class="mt-3 space-y-3" data-testid="sick-editor">
+        <p class="text-xs text-slate-500">選擇目前的症狀（可複選）：</p>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="sym in SICK_SYMPTOMS"
+            :key="sym.key"
+            type="button"
+            class="min-h-11 rounded-full border px-4 py-2 text-sm"
+            :class="sickForm.symptoms.includes(sym.key) ? 'border-rose-600 bg-rose-600 text-white font-medium' : 'border-slate-300 bg-white text-slate-700'"
+            :aria-pressed="sickForm.symptoms.includes(sym.key)"
+            @click="toggleSickSymptom(sym.key)"
+          >
+            {{ sym.label }}
+          </button>
+        </div>
+        <input
+          v-model="sickForm.note"
+          type="text"
+          :maxlength="SICK_NOTE_MAX"
+          placeholder="補充說明（選擇「其他」時必填，例如：頭暈、喉嚨痛）"
+          class="w-full rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
+          data-testid="sick-note"
+        />
+        <p v-if="sickError" class="text-xs text-rose-600" role="alert">{{ sickError }}</p>
+        <div class="flex gap-2">
+          <button type="button" class="min-h-11 flex-1 rounded-xl bg-rose-600 py-2 text-sm font-semibold text-white active:bg-rose-700" data-testid="sick-save" @click="saveSick">儲存</button>
+          <button type="button" class="min-h-11 rounded-xl bg-slate-100 px-4 py-2 text-sm text-slate-600" @click="sickEditing = false">取消</button>
+        </div>
+      </div>
+
+      <div v-if="sickInfo && !sickEditing" class="mt-2 text-sm text-rose-900" data-testid="sick-summary">
+        <p>
+          症狀：<b>{{ sickLabels(sickInfo).join('、') }}</b><span v-if="sickInfo.time" class="text-xs text-rose-700"> · {{ sickInfo.time }}</span>
+        </p>
+        <p v-if="sickInfo.note" class="mt-0.5 break-words">說明：{{ sickInfo.note }}</p>
+      </div>
+
+      <div
+        v-if="sickInfo"
+        class="mt-3 rounded-xl border p-3 text-sm leading-relaxed"
+        :class="sickHighRisk ? 'border-rose-300 bg-white text-rose-950' : 'border-amber-300 bg-white text-amber-950'"
+        role="note"
+        data-testid="sick-safety-card"
+      >
+        <p class="font-semibold">⚠️ 身體不適日（Sick day）注意事項 · 一般衛教資訊</p>
+        <ul class="mt-1 ml-5 list-disc space-y-0.5">
+          <li>服用 SGLT-2 抑制劑（[REDACTED]）期間，嘔吐、腹瀉、發燒、吃不下或大量飲酒會增加脫水及「血糖正常的酮酸中毒（euDKA）」風險，即使血糖不高也可能發生。</li>
+          <li>一般建議少量多次補充水分；若吃得下，維持少量容易消化的含醣食物，避免空腹或禁食。</li>
+          <li><b>請聯絡您的醫師，詢問是否需要暫停 [REDACTED]</b>（以及其他藥物）、何時恢復；本 App 不提供停藥或調整劑量的指示。</li>
+          <li><b>若出現噁心／嘔吐、腹痛、呼吸困難或呼吸急促、嗜睡或意識不清，請立即就醫（急診）。</b></li>
+        </ul>
+        <p class="mt-1 text-xs opacity-80">此紀錄會同步到雲端，並提供給 AI 分析與回診報告參考。</p>
+      </div>
+    </section>
+
     <!-- Hydration & Drinks -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <div class="flex items-start justify-between gap-2">
@@ -1612,5 +1784,19 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         <p class="text-xs text-slate-400">AI 建議僅供參考，不能取代醫師診斷。</p>
       </div>
     </section>
+
+    <!-- Undo snackbar for one-tap adds -->
+    <div
+      v-if="undoBar"
+      :key="undoBar.key"
+      class="fixed inset-x-0 bottom-20 z-40 flex justify-center px-3 md:bottom-6"
+      data-testid="undo-bar"
+    >
+      <div class="flex max-w-md items-center gap-3 rounded-xl bg-slate-900/95 py-2 pr-2 pl-4 text-sm text-white shadow-lg" role="status" aria-live="polite">
+        <span>{{ undoBar.text }}</span>
+        <button type="button" class="min-h-10 rounded-lg px-3 font-semibold text-teal-300 active:bg-white/10" data-testid="undo-btn" @click="runUndo">復原</button>
+        <button type="button" class="min-h-10 rounded-lg px-2 text-slate-300 active:bg-white/10" aria-label="關閉" @click="dismissUndo">✕</button>
+      </div>
+    </div>
   </div>
 </template>

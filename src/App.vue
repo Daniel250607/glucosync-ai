@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref,
 import DailyTracker from './components/DailyTracker.vue'
 import TrendChart from './components/TrendChart.vue'
 import LabMilestones from './components/LabMilestones.vue'
+import { daysSinceBackup, isBackupDue, loadBackupMeta, saveBackupMeta, SNOOZE_MS } from './data/backupReminder.js'
 import {
   PENDING_QR_PAIR_KEY,
   QR_PAIR_TTL_MS,
@@ -204,7 +205,9 @@ async function resyncFromCloud() {
   }
 }
 function onVisibilityChange() {
-  if (document.visibilityState === 'visible') resyncFromCloud()
+  if (document.visibilityState !== 'visible') return
+  refreshBackupClock() // an app left open for days re-checks the weekly backup reminder
+  resyncFromCloud()
 }
 
 function lockApp() {
@@ -521,6 +524,35 @@ function submitSettings() {
 const dataMsg = ref('')
 const dataMsgOk = ref(true)
 
+// Weekly backup reminder (device-local). A reminder banner + one-tap export instead of a silent
+// automatic download: mobile browsers block downloads that are not triggered by a user tap.
+const backupMeta = ref(loadBackupMeta())
+const backupNow = ref(Date.now())
+const hasAnyData = computed(() => Object.keys(days.value || {}).length > 0 || (labs.value || []).length > 0)
+const backupDue = computed(() => loaded.value && isBackupDue(backupMeta.value, { hasData: hasAnyData.value, now: backupNow.value }))
+const backupAgeDays = computed(() => daysSinceBackup(backupMeta.value, backupNow.value))
+const lastBackupText = computed(() => {
+  const t = backupMeta.value.lastBackupAt
+  if (!t) return '尚未在此裝置匯出過備份'
+  const d = new Date(t)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+})
+function refreshBackupClock() {
+  backupMeta.value = loadBackupMeta()
+  backupNow.value = Date.now()
+}
+function snoozeBackupReminder() {
+  backupMeta.value = saveBackupMeta({ snoozeUntil: Date.now() + SNOOZE_MS })
+}
+function setBackupReminder(on) {
+  backupMeta.value = saveBackupMeta({ remind: Boolean(on), snoozeUntil: null })
+}
+function backupFromBanner() {
+  exportData()
+  showToast('✅ 已下載備份檔，請存到雲端硬碟或其他安全位置。')
+}
+
 function exportData() {
   const blob = new Blob([JSON.stringify(buildBackup(getCustomConfig()), null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -531,6 +563,8 @@ function exportData() {
   a.click()
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+  backupMeta.value = saveBackupMeta({ lastBackupAt: Date.now(), snoozeUntil: null })
+  backupNow.value = Date.now()
   dataMsgOk.value = true
   dataMsg.value = '已匯出備份檔 (含記錄、檢驗與自訂快選/目標/用藥)。'
 }
@@ -973,6 +1007,19 @@ const qrCountdownLabel = computed(() => {
     <main class="mx-auto max-w-4xl p-4">
       <p v-if="!loaded" class="py-10 text-center text-slate-400">載入中…</p>
       <template v-else>
+        <div
+          v-if="backupDue"
+          class="mb-4 flex flex-wrap items-center gap-2 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-300"
+          role="status"
+          data-testid="backup-banner"
+        >
+          <p class="min-w-0 flex-1">
+            📦 <b>{{ backupAgeDays == null ? '尚未備份過資料' : `已 ${backupAgeDays} 天未備份` }}</b>
+            <span class="block text-xs text-amber-800">建議每週下載一次備份檔，存到雲端硬碟或電腦。</span>
+          </p>
+          <button type="button" class="min-h-11 rounded-xl bg-amber-600 px-4 py-2 font-semibold text-white active:bg-amber-700" data-testid="backup-now" @click="backupFromBanner">⬇️ 立即備份</button>
+          <button type="button" class="min-h-11 rounded-xl bg-white px-3 py-2 text-amber-800 ring-1 ring-amber-300" data-testid="backup-snooze" @click="snoozeBackupReminder">明天再提醒</button>
+        </div>
         <div v-show="tab === 'daily'" class="space-y-4">
           <section class="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
             <div class="flex items-center gap-2">
@@ -1027,6 +1074,7 @@ const qrCountdownLabel = computed(() => {
           v-show="tab === 'labs'"
           :labs="labs"
           :days="days"
+          :patient-name="displayName"
           @add-lab="addLab"
           @open-settings="openSettings"
           @apply-targets="applyProposedTargets"
@@ -1181,6 +1229,17 @@ const qrCountdownLabel = computed(() => {
           </label>
         </div>
         <p v-if="dataMsg" class="mt-2 text-sm" :class="dataMsgOk ? 'text-emerald-700' : 'text-rose-600'">{{ dataMsg }}</p>
+        <label class="mt-3 flex min-h-11 items-center gap-3 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            class="size-5 accent-teal-600"
+            data-testid="backup-remind-toggle"
+            :checked="backupMeta.remind"
+            @change="setBackupReminder($event.target.checked)"
+          />
+          每週備份提醒（超過 7 天未匯出時，在首頁顯示一鍵備份提醒）
+        </label>
+        <p class="text-xs text-slate-500" data-testid="last-backup">上次備份（此裝置）：{{ lastBackupText }}</p>
         </div>
 
         <div v-show="settingsTab === 'targets'">

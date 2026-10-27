@@ -14,7 +14,7 @@ import {
   Filler,
 } from 'chart.js'
 import { live } from '../data/presets.js'
-import { summarizeDay } from '../services/gemini.js'
+import { compliance, dayFlags } from '../data/report.js'
 
 Chart.register(
   BarController,
@@ -46,24 +46,10 @@ const charts = { macro: null, water: null, exercise: null }
 
 const series = computed(() => {
   const keys = Object.keys(props.days).sort().slice(-range.value)
-  return keys.map((k) => withFlags(props.days[k]))
+  return keys.map((k) => dayFlags(props.days[k]))
 })
 
-/**
- * summarizeDay + "was this metric actually logged?" flags. A missing value is NOT a zero:
- * - macro: only days with >= 1 AI-analyzed meal
- * - water: hydration_cc > 0 or any drink logged
- * - exercise: any exercise log or legacy exercise_min > 0
- * Days without the metric are drawn as gaps and excluded from that metric's compliance.
- */
-function withFlags(raw) {
-  const day = raw || {}
-  const s = summarizeDay(day)
-  const mealsAnalyzed = (day.meals || []).filter((m) => m && m.analysis).length
-  const hasWater = s.hydration_cc > 0 || (day.drinks || []).some((d) => d && d.name)
-  const hasExerciseLog = (day.exercise_logs || []).length > 0 || Number(day.exercise_min) > 0
-  return { ...s, meals_analyzed: mealsAnalyzed, has_water: hasWater, has_exercise: hasExerciseLog, raw: day }
-}
+// Per-day logged flags are shared with the clinic report (src/data/report.js).
 
 // ---------- Colors (single source for bars, legend and footnote) ----------
 const COLORS = {
@@ -110,21 +96,12 @@ function exStatus(d, t) {
   return m >= t.exerciseTarget ? '達標' : `未達標（差 ${t.exerciseTarget - m} 分）`
 }
 
-/** Compliance over days where the metric was logged (`has`); no-data days count as neither pass nor fail. */
-function compliance(allRows, test, has) {
-  const rows = allRows.filter(has)
-  const total = rows.length
-  if (!total) return { pct: null, hit: 0, total: 0 }
-  const hit = rows.filter(test).length
-  return { pct: Math.round((hit / total) * 100), hit, total }
-}
-
 const scorecards = computed(() => {
   const keys = Object.keys(props.days).sort()
   const curr = series.value
   const prev = keys
     .slice(Math.max(0, keys.length - range.value * 2), Math.max(0, keys.length - range.value))
-    .map((k) => withFlags(props.days[k]))
+    .map((k) => dayFlags(props.days[k]))
   const t = live.targets
   const defs = [
     {
