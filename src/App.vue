@@ -1106,9 +1106,6 @@ const qrCountdownLabel = computed(() => {
     >
       <div class="max-h-[90vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 sm:max-w-lg sm:rounded-2xl">
         <h2 class="text-lg font-semibold text-slate-800">設定</h2>
-        <p class="mt-1 text-xs text-slate-500">
-          金鑰僅儲存於此瀏覽器的 localStorage，不會寫入程式碼或公開網頁。（.env 的 VITE_GEMINI_API_KEY 只在本機 npm run dev 時生效，正式版不會打包。）
-        </p>
 
         <div class="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
           <button
@@ -1125,94 +1122,120 @@ const qrCountdownLabel = computed(() => {
           >🎯 個人目標與用藥調整</button>
         </div>
 
-        <div v-show="settingsTab === 'system'">
-        <label class="mt-4 block text-sm font-medium text-slate-700">
-          Gemini API Key
-          <div class="mt-1 flex gap-2">
-            <input
-              v-model="settings.geminiApiKey"
-              :type="showApiKey ? 'text' : 'password'"
-              autocomplete="off"
-              placeholder="AIza..."
-              class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2.5 text-base"
-            />
+        <div v-show="settingsTab === 'system'" class="mt-4 space-y-4">
+          <!-- (1) AI 設定 -->
+          <section class="rounded-2xl bg-white p-4 ring-1 ring-slate-200">
+            <h3 class="text-sm font-semibold text-slate-800">🤖 AI 設定</h3>
+
+            <label class="mt-3 block text-sm font-medium text-slate-700">
+              Gemini API Key
+              <div class="mt-1 flex gap-2">
+                <input
+                  v-model="settings.geminiApiKey"
+                  :type="showApiKey ? 'text' : 'password'"
+                  autocomplete="off"
+                  placeholder="AIza..."
+                  class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2.5 text-base"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 rounded-lg bg-slate-100 px-3 text-xs text-slate-600"
+                  @click="showApiKey = !showApiKey"
+                >{{ showApiKey ? '隱藏' : '顯示' }}</button>
+              </div>
+            </label>
+
+            <label class="mt-4 block text-sm font-medium text-slate-700">
+              Gemini 模型名稱 (Model ID)
+              <input
+                v-model="settings.geminiModel"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="gemini-3.8-flash"
+                class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
+              />
+            </label>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button
+                v-for="m in GEMINI_MODEL_OPTIONS"
+                :key="m"
+                type="button"
+                class="rounded-full px-3 py-1.5 text-xs"
+                :class="settings.geminiModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+                @click="settings.geminiModel = m"
+              >
+                {{ m }}
+              </button>
+            </div>
+            <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GEMINI_MODEL }}，亦可填入其他有效模型。</p>
+
+            <p class="mt-4 text-sm font-medium text-slate-700">🧠 AI 思考程度</p>
+            <p class="text-xs text-slate-400">越高越仔細但越慢；日常餐點紀錄用低檔即可。</p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button
+                v-for="opt in THINKING_LEVEL_OPTIONS"
+                :key="opt.budget"
+                type="button"
+                class="rounded-full px-3 py-1.5 text-xs"
+                :class="Number(settings.thinkingBudget) === opt.budget ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+                @click="settings.thinkingBudget = opt.budget"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+            <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint }}</p>
+
+            <p class="mt-4 border-t border-slate-100 pt-2 text-[11px] leading-snug text-slate-400">
+              🔒 金鑰僅存於此瀏覽器的 localStorage，不會寫入程式碼或公開網頁。（.env 的 VITE_GEMINI_API_KEY 僅在本機 npm run dev 生效，正式版不會打包。）
+            </p>
+          </section>
+
+          <!-- (2) 雲端同步 -->
+          <section class="rounded-2xl bg-white ring-1 ring-slate-200">
+            <details class="group">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-2 p-4 [&::-webkit-details-marker]:hidden">
+                <span class="text-sm font-semibold text-slate-800">☁️ 雲端同步</span>
+                <span class="flex items-center gap-2">
+                  <span
+                    class="rounded-full px-2 py-0.5 text-[11px] font-medium"
+                    :class="(settings.firebaseConfig || '').trim() ? 'bg-teal-50 text-teal-700' : 'bg-slate-100 text-slate-500'"
+                  >{{ (settings.firebaseConfig || '').trim() ? '已設定' : '未設定' }}</span>
+                  <span class="text-xs text-slate-400 transition-transform group-open:rotate-180">▼</span>
+                </span>
+              </summary>
+              <div class="px-4 pb-4">
+                <label class="block text-sm font-medium text-slate-700">
+                  Firebase 設定 (JSON，可留空使用本機儲存)
+                  <textarea
+                    v-model="settings.firebaseConfig"
+                    rows="5"
+                    spellcheck="false"
+                    placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'
+                    class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-xs"
+                  />
+                </label>
+              </div>
+            </details>
+          </section>
+
+          <!-- (3) 手機配對 -->
+          <section class="rounded-2xl bg-white p-4 ring-1 ring-slate-200">
+            <h3 class="text-sm font-semibold text-slate-800">📱 手機配對</h3>
+            <p class="mt-1 text-xs text-slate-500">掃碼一次即匯入金鑰與設定，配對後 QR 立即銷毀。有效時間 5 分鐘。</p>
             <button
               type="button"
-              class="shrink-0 rounded-lg bg-slate-100 px-3 text-xs text-slate-600"
-              @click="showApiKey = !showApiKey"
-            >{{ showApiKey ? '隱藏' : '顯示' }}</button>
-          </div>
-        </label>
-
-        <label class="mt-4 block text-sm font-medium text-slate-700">
-          Gemini 模型名稱 (Model ID)
-          <input
-            v-model="settings.geminiModel"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="gemini-3.8-flash"
-            class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
-          />
-        </label>
-        <div class="mt-2 flex flex-wrap gap-2">
-          <button
-            v-for="m in GEMINI_MODEL_OPTIONS"
-            :key="m"
-            type="button"
-            class="rounded-full px-3 py-1.5 text-xs"
-            :class="settings.geminiModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
-            @click="settings.geminiModel = m"
-          >
-            {{ m }}
-          </button>
-        </div>
-        <p class="mt-1 text-xs text-slate-400">
-          預設 {{ DEFAULT_GEMINI_MODEL }}。可在欄位填入其他有效模型名稱；舊版 gemini-2.0-flash / gemini-1.5-flash 已不適用新金鑰。
-        </p>
-
-        <p class="mt-4 text-sm font-medium text-slate-700">🧠 AI 思考程度 (Thinking Level)</p>
-        <div class="mt-2 flex flex-wrap gap-2">
-          <button
-            v-for="opt in THINKING_LEVEL_OPTIONS"
-            :key="opt.budget"
-            type="button"
-            class="rounded-full px-3 py-1.5 text-xs"
-            :class="Number(settings.thinkingBudget) === opt.budget ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
-            @click="settings.thinkingBudget = opt.budget"
-          >
-            {{ opt.label }}
-          </button>
-        </div>
-        <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint }}</p>
-
-        <label class="mt-4 block text-sm font-medium text-slate-700">
-          Firebase 設定 (JSON，可留空使用本機儲存)
-          <textarea
-            v-model="settings.firebaseConfig"
-            rows="5"
-            spellcheck="false"
-            placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'
-            class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-xs"
-          />
-        </label>
-
-        <div class="mt-5 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
-          <p class="text-sm font-medium text-slate-800">📱 產生手機配對動態 QR Code</p>
-          <p class="mt-1 text-xs text-slate-500">掃碼一次即匯入金鑰與設定，配對後 QR 立即銷毀。有效時間 5 分鐘。</p>
-          <button
-            type="button"
-            class="mt-3 w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
-            :disabled="qrPair.busy"
-            @click="generateQrPairing"
-          >{{ qrPair.active ? '重新產生 QR Code' : '📱 產生手機配對動態 QR Code' }}</button>
-          <div v-if="qrPair.active" class="mt-3 text-center">
-            <div class="mx-auto max-w-[220px] overflow-hidden rounded-xl bg-white p-2 ring-1 ring-slate-200" v-html="qrPair.svg"></div>
-            <p class="mt-2 text-sm font-semibold text-slate-700">剩餘 {{ qrCountdownLabel }}</p>
-            <p class="text-xs text-slate-400">{{ qrPair.mode === 'cloud' ? '雲端單次銷毀模式' : '離線時效 / 單次 nonce 模式' }}</p>
-            <button type="button" class="mt-2 text-sm text-rose-600" @click="destroyQrPairing(false)">✕ 立即銷毀 QR Code</button>
-          </div>
-        </div>
+              class="mt-3 w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+              :disabled="qrPair.busy"
+              @click="generateQrPairing"
+            >{{ qrPair.active ? '重新產生 QR Code' : '📱 產生手機配對動態 QR Code' }}</button>
+            <div v-if="qrPair.active" class="mt-3 text-center">
+              <div class="mx-auto max-w-[220px] overflow-hidden rounded-xl bg-white p-2 ring-1 ring-slate-200" v-html="qrPair.svg"></div>
+              <p class="mt-2 text-sm font-semibold text-slate-700">剩餘 {{ qrCountdownLabel }}</p>
+              <p class="text-xs text-slate-400">{{ qrPair.mode === 'cloud' ? '雲端單次銷毀模式' : '離線時效 / 單次 nonce 模式' }}</p>
+              <button type="button" class="mt-2 text-sm text-rose-600" @click="destroyQrPairing(false)">✕ 立即銷毀 QR Code</button>
+            </div>
+          </section>
 
         <hr class="my-5 border-slate-200" />
         <h3 class="text-sm font-semibold text-slate-800">資料備份 / 轉移</h3>
