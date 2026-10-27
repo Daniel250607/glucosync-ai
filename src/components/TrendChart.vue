@@ -324,10 +324,23 @@ function render() {
   })
 }
 
-onMounted(render)
+function hideTooltipOnOutsideTap(e) {
+  if (!chart || !canvas.value || canvas.value.contains(e.target)) return
+  chart.setActiveElements([])
+  chart.tooltip.setActiveElements([], { x: 0, y: 0 })
+  chart.update('none')
+}
+
+onMounted(() => {
+  render()
+  document.addEventListener('pointerdown', hideTooltipOnOutsideTap)
+})
 // Re-render when data or the user-configured targets change.
 watch([series, () => ({ ...live.targets })], render)
-onBeforeUnmount(() => chart?.destroy())
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', hideTooltipOnOutsideTap)
+  chart?.destroy()
+})
 </script>
 
 <template>
