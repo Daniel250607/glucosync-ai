@@ -10,10 +10,12 @@ import {
   signOut,
 } from 'firebase/auth'
 import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc } from 'firebase/firestore'
+import { DATE_KEY_RE, mergeSynced, ts } from './data/syncMerge.js'
 
 const SETTINGS_KEY = 'glucosync.settings'
 const DAYS_KEY = 'glucosync.days'
 const LABS_KEY = 'glucosync.labs'
+const DAY_TOMBSTONES_KEY = 'glucosync.dayTombstones' // { [date]: deletedAt } — see data/syncMerge.js
 const CONFIG_KEY = 'glucosync.customConfig'
 const USED_NONCES_KEY = 'glucosync.usedNonces'
 export const PENDING_QR_PAIR_KEY = 'glucosync.pendingQrPair'
@@ -201,53 +203,102 @@ function writeLocal(key, value) {
   localStorage.setItem(key, JSON.stringify(value))
 }
 
-// ---------- Daily logs ----------
-export async function loadDays() {
-  const local = readLocal(DAYS_KEY)
-  if (!isCloudReady()) return local
-  try {
-    const snap = await getDocs(collection(db, 'days'))
-    const remote = {}
-    snap.forEach((d) => (remote[d.id] = d.data()))
-    const merged = { ...local, ...remote }
-    writeLocal(DAYS_KEY, merged)
-    return merged
-  } catch (err) {
-    console.warn('[GlucoSync] Firestore read failed, using local cache.', err)
-    return local
-  }
+function snapToMap(snap) {
+  const out = {}
+  snap.forEach((d) => {
+    const data = d.data()
+    if (data && typeof data === 'object') out[d.id] = data
+  })
+  return out
 }
 
-export async function saveDay(day) {
-  const all = readLocal(DAYS_KEY)
-  all[day.date] = day
-  writeLocal(DAYS_KEY, all)
-  if (!isCloudReady()) return
+/** Plain JSON copy (drops undefined / functions, which Firestore setDoc rejects). */
+const plain = (v) => JSON.parse(JSON.stringify(v))
+
+// ---------- Daily logs ----------
+/**
+ * Two-way sync of `days` (see data/syncMerge.js): newest `updatedAt` wins, tombstones hide
+ * deleted days on every device, offline-created days are uploaded, pending tombstones are pushed.
+ * Local storage is re-read after the network round trip so edits made meanwhile are not lost.
+ */
+export async function loadDays() {
+  if (!isCloudReady()) return readLocal(DAYS_KEY)
+  let remote
   try {
-    await setDoc(doc(db, 'days', day.date), day)
+    remote = snapToMap(await getDocs(collection(db, 'days')))
   } catch (err) {
-    console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err)
+    console.warn('[GlucoSync] Firestore read failed, using local cache.', err)
+    return readLocal(DAYS_KEY)
   }
+  const res = mergeSynced({
+    local: readLocal(DAYS_KEY),
+    remote,
+    localTombstones: readLocal(DAY_TOMBSTONES_KEY),
+    uploadLegacyLocal: false,
+  })
+  writeLocal(DAYS_KEY, res.merged)
+  writeLocal(DAY_TOMBSTONES_KEY, res.tombstones)
+  const writes = [
+    ...res.uploads.map(([id, day]) => setDoc(doc(db, 'days', id), plain(day))),
+    ...res.pushTombstones.map(([id, deletedAt]) => setDoc(doc(db, 'days', id), { date: id, deleted: true, deletedAt })),
+  ]
+  const failed = (await Promise.allSettled(writes)).filter((r) => r.status === 'rejected')
+  if (failed.length) console.warn(`[GlucoSync] ${failed.length} Firestore sync write(s) failed; will retry on next sync.`, failed[0].reason)
+  return readLocal(DAYS_KEY)
+}
+
+/** Save one day (stamped with `updatedAt`). A save after a deletion revives the day. */
+export async function saveDay(day) {
+  const key = String((day && day.date) || '')
+  if (!DATE_KEY_RE.test(key)) {
+    console.warn('[GlucoSync] saveDay: invalid date, not saved.', key)
+    return null
+  }
+  const tombs = readLocal(DAY_TOMBSTONES_KEY)
+  // Strictly newer than a local deletion of the same date, even within the same millisecond.
+  const stamped = { ...day, date: key, updatedAt: Math.max(Date.now(), ts(tombs[key]) + 1) }
+  delete stamped.deleted
+  delete stamped.deletedAt
+  const all = readLocal(DAYS_KEY)
+  all[key] = stamped
+  writeLocal(DAYS_KEY, all)
+  if (key in tombs) {
+    delete tombs[key]
+    writeLocal(DAY_TOMBSTONES_KEY, tombs)
+  }
+  if (!isCloudReady()) return stamped
+  try {
+    await setDoc(doc(db, 'days', key), plain(stamped))
+  } catch (err) {
+    console.warn('[GlucoSync] Firestore write failed (kept in localStorage; uploaded on next sync).', err)
+  }
+  return stamped
 }
 
 /**
- * Delete ONE day's record (single date only; no bulk delete). Removes it from localStorage
- * first, then from Firestore `days/{date}` when cloud sync is active.
- * Returns { cloud: 'deleted' | 'skipped' | 'failed' }. On 'failed' the cloud copy still exists
- * and loadDays() (remote wins) would bring the day back on the next load.
+ * Delete ONE day's record (single date only; no bulk delete). Removes it from localStorage and
+ * records a local tombstone, then replaces Firestore `days/{date}` with a tombstone
+ * { date, deleted: true, deletedAt } so other devices drop their cached copy on their next sync
+ * (a plain deleteDoc would let them keep — and re-upload — the old day).
+ * Returns { cloud: 'deleted' | 'skipped' | 'failed' }. 'skipped' / 'failed' keep the local
+ * tombstone, which loadDays() pushes to Firestore on the next successful sync.
  */
 export async function deleteDay(date) {
   const key = String(date || '')
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw new Error('日期格式錯誤，無法刪除。')
+  if (!DATE_KEY_RE.test(key)) throw new Error('日期格式錯誤，無法刪除。')
   const all = readLocal(DAYS_KEY)
+  const deletedAt = Math.max(Date.now(), ts(all[key] && all[key].updatedAt) + 1)
   delete all[key]
   writeLocal(DAYS_KEY, all)
+  const tombs = readLocal(DAY_TOMBSTONES_KEY)
+  tombs[key] = deletedAt
+  writeLocal(DAY_TOMBSTONES_KEY, tombs)
   if (!isCloudReady()) return { cloud: 'skipped' }
   try {
-    await deleteDoc(doc(db, 'days', key))
+    await setDoc(doc(db, 'days', key), { date: key, deleted: true, deletedAt })
     return { cloud: 'deleted' }
   } catch (err) {
-    console.warn('[GlucoSync] Firestore delete failed (removed from localStorage only).', err)
+    console.warn('[GlucoSync] Firestore tombstone write failed (retried on next sync).', err)
     return { cloud: 'failed' }
   }
 }
@@ -327,33 +378,47 @@ export async function importBackup(data) {
 }
 
 // ---------- Lab results ----------
+// Same merge as days (newest `updatedAt` wins, local-only results are uploaded). The app has no
+// lab deletion, so no lab tombstones are needed; legacy local-only labs (failed uploads) upload too.
 export async function loadLabs() {
-  const local = readLocal(LABS_KEY)
-  let merged = local
-  if (isCloudReady()) {
-    try {
-      const snap = await getDocs(collection(db, 'labs'))
-      const remote = {}
-      snap.forEach((d) => (remote[d.id] = d.data()))
-      merged = { ...local, ...remote }
-      writeLocal(LABS_KEY, merged)
-    } catch (err) {
-      console.warn('[GlucoSync] Firestore read failed, using local cache.', err)
-    }
+  const sorted = (map) =>
+    Object.values(map)
+      .filter((l) => l && typeof l === 'object' && typeof l.date === 'string')
+      .sort((a, b) => a.date.localeCompare(b.date))
+  if (!isCloudReady()) return sorted(readLocal(LABS_KEY))
+  let remote
+  try {
+    remote = snapToMap(await getDocs(collection(db, 'labs')))
+  } catch (err) {
+    console.warn('[GlucoSync] Firestore read failed, using local cache.', err)
+    return sorted(readLocal(LABS_KEY))
   }
-  return Object.values(merged).sort((a, b) => a.date.localeCompare(b.date))
+  const res = mergeSynced({ local: readLocal(LABS_KEY), remote, localTombstones: {}, uploadLegacyLocal: true })
+  writeLocal(LABS_KEY, res.merged)
+  const failed = (await Promise.allSettled(res.uploads.map(([id, lab]) => setDoc(doc(db, 'labs', id), plain(lab))))).filter(
+    (r) => r.status === 'rejected',
+  )
+  if (failed.length) console.warn(`[GlucoSync] ${failed.length} lab upload(s) failed; will retry on next sync.`, failed[0].reason)
+  return sorted(readLocal(LABS_KEY))
 }
 
 export async function saveLab(lab) {
-  const all = readLocal(LABS_KEY)
-  all[lab.date] = lab
-  writeLocal(LABS_KEY, all)
-  if (!isCloudReady()) return
-  try {
-    await setDoc(doc(db, 'labs', lab.date), lab)
-  } catch (err) {
-    console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err)
+  const key = String((lab && lab.date) || '')
+  if (!DATE_KEY_RE.test(key)) {
+    console.warn('[GlucoSync] saveLab: invalid date, not saved.', key)
+    return null
   }
+  const stamped = { ...lab, date: key, updatedAt: Date.now() }
+  const all = readLocal(LABS_KEY)
+  all[key] = stamped
+  writeLocal(LABS_KEY, all)
+  if (!isCloudReady()) return stamped
+  try {
+    await setDoc(doc(db, 'labs', key), plain(stamped))
+  } catch (err) {
+    console.warn('[GlucoSync] Firestore write failed (kept in localStorage; uploaded on next sync).', err)
+  }
+  return stamped
 }
 
 // ---------- One-time QR pairing ----------

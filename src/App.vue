@@ -175,6 +175,36 @@ async function hydrateFromStorage() {
   applyCustomConfig(await loadCustomConfig())
   days.value = await loadDays()
   labs.value = await loadLabs()
+  lastCloudSync = Date.now()
+}
+
+// Re-sync when the app comes back to the foreground or the network returns, so a day deleted
+// (or edited) on another device is applied without a manual reload. No realtime listeners.
+const RESYNC_MIN_INTERVAL_MS = 15 * 1000
+let lastCloudSync = 0
+let resyncing = false
+async function resyncFromCloud() {
+  if (!loaded.value || !authUser.value || !isCloudReady() || resyncing) return
+  if (Date.now() - lastCloudSync < RESYNC_MIN_INTERVAL_MS) return
+  resyncing = true
+  try {
+    // Assign right after each await: loadDays()/loadLabs() return a fresh localStorage read, so
+    // nothing the user saved or deleted in between is overwritten.
+    const nextDays = await loadDays()
+    if (!authUser.value) return // signed out meanwhile: lockApp() already cleared state
+    days.value = nextDays
+    const nextLabs = await loadLabs()
+    if (!authUser.value) return
+    labs.value = nextLabs
+  } catch (err) {
+    console.warn('[GlucoSync] resync failed.', err)
+  } finally {
+    lastCloudSync = Date.now()
+    resyncing = false
+  }
+}
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') resyncFromCloud()
 }
 
 function lockApp() {
@@ -192,6 +222,8 @@ function lockApp() {
 onMounted(() => {
   document.addEventListener('pointerdown', onDocPointerDown, true)
   document.addEventListener('keydown', onDocKeydown)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  window.addEventListener('online', resyncFromCloud)
   ingestQrPairHash()
   pendingPairBanner.value = !!readPendingPair()
   onAuthStateChanged(async (user, meta) => {
@@ -211,6 +243,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocPointerDown, true)
   document.removeEventListener('keydown', onDocKeydown)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('online', resyncFromCloud)
   destroyQrPairing(true)
 })
 
@@ -242,8 +276,10 @@ async function deleteSelectedDay() {
     const res = await deleteDay(date)
     showToast(
       res.cloud === 'failed'
-        ? `已刪除 ${date} 的本機紀錄，但雲端刪除失敗；下次同步時可能會恢復，請確認網路與 Firestore 權限後再刪一次。`
-        : `🗑️ 已刪除 ${date} 的紀錄`,
+        ? `已刪除 ${date} 的本機紀錄；雲端暫時無法同步刪除，下次連線同步時會自動再試（若一直失敗請確認 Firestore 權限）。`
+        : res.cloud === 'skipped'
+          ? `🗑️ 已刪除 ${date} 的本機紀錄；登入雲端後會同步刪除。`
+          : `🗑️ 已刪除 ${date} 的紀錄（其他裝置下次同步時也會移除）`,
     )
   } catch (err) {
     showToast(err.message || String(err))
