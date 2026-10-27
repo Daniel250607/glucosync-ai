@@ -2104,9 +2104,23 @@
           chart = new Chart(canvas.value, { type: 'bar', data: buildData(), options: buildOptions() });
         }
 
-        onMounted(render);
+        function hideTooltipOnOutsideTap(e) {
+          if (!chart || !canvas.value || canvas.value.contains(e.target)) return;
+          chart.setActiveElements([]);
+          chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+          chart.update('none');
+        }
+        onMounted(function () {
+          render();
+          document.addEventListener('pointerdown', hideTooltipOnOutsideTap);
+          document.addEventListener('touchstart', hideTooltipOnOutsideTap, { passive: true });
+        });
         watch([series, function () { return Object.assign({}, live.targets); }], render);
-        onBeforeUnmount(function () { if (chart) chart.destroy(); });
+        onBeforeUnmount(function () {
+          document.removeEventListener('pointerdown', hideTooltipOnOutsideTap);
+          document.removeEventListener('touchstart', hideTooltipOnOutsideTap);
+          if (chart) chart.destroy();
+        });
 
         return { range: range, canvas: canvas, series: series, scorecards: scorecards, live: live };
       },
