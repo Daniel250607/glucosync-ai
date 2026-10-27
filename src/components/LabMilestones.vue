@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE, live } from '../data/presets.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE, hydrationRangeFromWeight, live } from '../data/presets.js'
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
 
@@ -78,6 +78,8 @@ function recentIntakeDays(days) {
     .map((k) => summarizeDay(days[k]))
 }
 
+// Weight-based hydration band shown in the safety note (falls back to the 70 kg default band).
+const hydrationBand = computed(() => hydrationRangeFromWeight(live.targets.userWeight))
 const safeTargets = computed(() => clampProposedTargets(evaluation.value?.proposed_targets, live.targets))
 const targetsMatch = computed(() => {
   const next = safeTargets.value
@@ -267,7 +269,7 @@ async function runEvaluation() {
           >
             {{ targetsMatch ? '目前目標已符合建議' : '✨ 一鍵套用建議目標至設定' }}
           </button>
-          <p class="mt-2 text-[11px] text-amber-800">套用時守住安全邊界：碳水 100–180 g、飽和脂肪上限 ≤ 20 g、飲水 2000–2500 cc、運動 ≥ 20 分。</p>
+          <p class="mt-2 text-[11px] text-amber-800">套用時守住安全邊界：碳水 100–180 g、飽和脂肪上限 ≤ 20 g、飲水 {{ hydrationBand.hydrationMin }}–{{ hydrationBand.hydrationMax }} cc（依體重 {{ hydrationBand.userWeight }} kg，下限不低於 2000 cc）、運動 ≥ 20 分。</p>
         </div>
         <div class="rounded-xl bg-indigo-50 p-3">
           <p class="font-semibold text-indigo-900">{{ evaluation.phase_name }}</p>

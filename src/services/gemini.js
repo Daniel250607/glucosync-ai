@@ -1,7 +1,7 @@
 // Gemini client using Structured Outputs (JSON Schema).
 // The API key and model ID are never hardcoded: they are read from user settings / env.
 import healthContext from '../../docs/health_context.md?raw'
-import { live, medLabel } from '../data/presets.js'
+import { hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
 import { loadSettings } from '../firebase.js'
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash'
@@ -32,7 +32,15 @@ function geminiEndpoint(model) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
 }
 
-const SYSTEM_INSTRUCTION = `You are GlucoSync, a clinical-nutrition assistant for ONE patient with poorly controlled type 2 diabetes, dyslipidemia and early albuminuria. Respond in Traditional Chinese (繁體中文, Taiwan usage) inside all string fields. Be concise and practical (Taiwan convenience stores, bento shops, home cooking).
+/**
+ * Weight-based hydration band (lower bound never below 2000 cc on [REDACTED]).
+ * Falls back to the default 70 kg band when the weight is missing/invalid.
+ */
+function hydrationBand(weightKg = live.targets?.userWeight) {
+  return hydrationRangeFromWeight(weightKg)
+}
+
+const SYSTEM_INSTRUCTION_TEMPLATE = `You are GlucoSync, a clinical-nutrition assistant for ONE patient with poorly controlled type 2 diabetes, dyslipidemia and early albuminuria. Respond in Traditional Chinese (繁體中文, Taiwan usage) inside all string fields. Be concise and practical (Taiwan convenience stores, bento shops, home cooking).
 
 === PATIENT BASELINE & MEDICATION CONTEXT ===
 ${healthContext}
@@ -44,7 +52,7 @@ ${healthContext}
    - If a meal has very low carbohydrate (< ~20 g for a main meal) or the user mentions fasting, vomiting, heavy alcohol or illness, set sglt2_ketone_safety_alert to "yellow" or "red" and advise adding a measured portion of complex carbohydrate and fluids (and to seek medical advice if ill).
 2. LDL-C control (LDL-C [X], on [REDACTED]): prioritize reducing SATURATED FAT (target < 15-20 g/day) and trans fat over limiting dietary cholesterol. Do not penalize eggs or seafood merely for cholesterol content; flag fatty cuts, skin, lard, cream, coconut/palm oil, fried and processed meat, and encourage unsaturated fats, fish, legumes, soluble fiber.
 3. Glycemia / triglycerides (HbA1c [X]%, TG [X]): flag refined starch, sugary drinks, sauces with sugar, large rice/noodle portions, and fried foods. Encourage eating order: vegetables -> protein -> carbohydrate (half portion), and post-meal light activity (marching in place 15-20 min).
-4. Renal / urine (UAcr [X], U-Specific Gravity [X], glycosuria): monitor sodium (aim < 2300 mg/day, ~< 800 mg/meal) and hydration (2000-2500 cc/day). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.
+4. Renal / urine (UAcr [X], U-Specific Gravity [X], glycosuria): monitor sodium (aim < 2300 mg/day, ~< 800 mg/meal) and hydration ({{HYDRATION}}). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.
 5. Never give a diagnosis or change medication doses. For medication questions advise consulting the treating physician.
 6. Estimate nutrition honestly; when uncertain, give a reasonable estimate and say so in actionable_advice.
 7. Keep actionable_advice to at most 60 words (about 2 short Traditional Chinese sentences). No long paragraphs.
@@ -55,6 +63,13 @@ Each alert has "level" in {green, yellow, red} and a short "message" (<= 40 Chin
 - ldl_saturated_fat_alert: saturated fat load relative to the daily < 15-20 g budget.
 - renal_hydration_alert: sodium load and hydration needs relevant to UAcr and urine specific gravity.
 - sglt2_ketone_safety_alert: is carbohydrate adequate (not ketogenic) to avoid euglycemic DKA risk on [REDACTED]? Green means carbs are adequate; yellow/red means too low or risky situation.`
+
+/** System instruction with the CURRENT weight-based hydration range injected (re-built per request). */
+function systemInstruction() {
+  const b = hydrationBand()
+  const hydration = `weight-based ${b.hydrationMin}-${b.hydrationMax} cc/day for ${b.userWeight} kg; never below 2000 cc on an SGLT-2 inhibitor. This weight-based range supersedes any fixed hydration figure in the baseline context above`
+  return SYSTEM_INSTRUCTION_TEMPLATE.replace('{{HYDRATION}}', () => hydration)
+}
 
 // ---------- Schemas ----------
 const alertSchema = {
@@ -98,6 +113,30 @@ const mealSchema = {
     'renal_hydration_alert',
     'sglt2_ketone_safety_alert',
     'actionable_advice',
+  ],
+}
+
+const daySummarySchema = {
+  type: 'OBJECT',
+  properties: {
+    overall_assessment: { type: 'STRING' },
+    glycemic_tg_alert: alertSchema,
+    ldl_saturated_fat_alert: alertSchema,
+    renal_hydration_alert: alertSchema,
+    sglt2_ketone_safety_alert: alertSchema,
+    highlights: { type: 'ARRAY', items: { type: 'STRING' } },
+    improvements: { type: 'ARRAY', items: { type: 'STRING' } },
+    tomorrow_focus: { type: 'STRING' },
+  },
+  required: [
+    'overall_assessment',
+    'glycemic_tg_alert',
+    'ldl_saturated_fat_alert',
+    'renal_hydration_alert',
+    'sglt2_ketone_safety_alert',
+    'highlights',
+    'improvements',
+    'tomorrow_focus',
   ],
 }
 
@@ -249,7 +288,7 @@ async function generate({ apiKey, parts, schema }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+      systemInstruction: { parts: [{ text: systemInstruction() }] },
       contents: [{ role: 'user', parts }],
       generationConfig: {
         temperature: 0.2,
@@ -279,7 +318,7 @@ function userConfigLines() {
     .map((m) => `${medLabel(m)} (${m.timing === 'both' ? 'morning+evening' : m.timing})`)
     .join('; ')
   return [
-    `User-configured daily targets: carbohydrate ${t.carbsMin}-${t.carbsMax} g (never go ketogenic), saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, hydration ${t.hydrationMin}-${t.hydrationMax} cc, post-dinner marching ${t.exerciseTarget} min. Use these as the daily budgets.`,
+    `User-configured daily targets: carbohydrate ${t.carbsMin}-${t.carbsMax} g (never go ketogenic), saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, hydration ${t.hydrationMin}-${t.hydrationMax} cc (weight-based for ${hydrationBand().userWeight} kg, never below 2000 cc), post-dinner marching ${t.exerciseTarget} min. Use these as the daily budgets.`,
     `Current medication list configured by the user (treat as the current regimen): ${meds || 'none'}.`,
   ]
 }
@@ -339,6 +378,23 @@ export async function analyzeMeal({ apiKey, text = '', tags = [], images = [], i
   return generate({ apiKey, parts, schema: mealSchema })
 }
 
+/**
+ * End-of-day AI summary (ported from the standalone build so the Vite build has no feature gap).
+ * @param {{apiKey:string, totals:object, meals:object[], meds:object}} opts
+ */
+export async function summarizeDayAI({ apiKey, totals, meals, meds }) {
+  const text = [
+    'Write the end-of-day summary for this patient and return the structured JSON. The four alerts reflect the WHOLE day.',
+    `Day totals, drinks, exercise logs and tracker values: ${JSON.stringify(totals)}`,
+    `Meals logged: ${JSON.stringify(meals)}`,
+    `Medications taken: ${JSON.stringify(meds)}`,
+    'Sodium budget: < 2300 mg/day.',
+    ...userConfigLines(),
+    'If some meals were logged without nutrition analysis, say the totals are incomplete.',
+  ].join('\n')
+  return generate({ apiKey, parts: [{ text }], schema: daySummarySchema })
+}
+
 /** Mean intake across logged-day summaries. Zeros count, so unlogged meals pull carb and fat averages down. */
 export function averageIntake(summaries) {
   const list = Array.isArray(summaries) ? summaries : []
@@ -369,7 +425,8 @@ export function averageIntake(summaries) {
 /**
  * Clamp a model-proposed target set onto clinical safety bounds.
  * Carbs stay 100-180 g (no ketogenic intake on [REDACTED]). Saturated fat stays <= 20 g.
- * Hydration stays 2000-2500 cc. Exercise stays at least 20 minutes.
+ * Hydration stays inside the weight-based band from hydrationRangeFromWeight() (current.userWeight,
+ * else live.targets.userWeight; lower bound never below 2000 cc). Exercise stays at least 20 minutes.
  * Returns null when the payload has no numeric target fields.
  */
 export function clampProposedTargets(raw, current = {}) {
@@ -392,8 +449,10 @@ export function clampProposedTargets(raw, current = {}) {
   const satFatMax = Math.min(20, Math.max(1, num('satFatMax', 20)))
   const satFatMin = Math.min(satFatMax, Math.max(0, num('satFatMin', 15)))
 
-  let hydrationMin = Math.min(2500, Math.max(2000, num('hydrationMin', 2000)))
-  let hydrationMax = Math.min(2500, Math.max(2000, num('hydrationMax', 2500)))
+  const band = hydrationBand(current.userWeight ?? live.targets?.userWeight)
+  const clampWater = (v) => Math.min(band.hydrationMax, Math.max(band.hydrationMin, v))
+  let hydrationMin = clampWater(num('hydrationMin', band.hydrationMin))
+  let hydrationMax = clampWater(num('hydrationMax', band.hydrationMax))
   if (hydrationMin > hydrationMax) hydrationMin = hydrationMax
 
   const exerciseTarget = Math.max(20, num('exerciseTarget', 20))
@@ -437,7 +496,7 @@ export async function analyzeHydrationSchedule({ apiKey, currentWater, targetMin
     'Advise how this patient should distribute the remaining hydration across the rest of today.',
     `Current local time: ${currentTime || 'unknown'}.`,
     `Effective hydration so far (pure water plus drinks that count as water): ${Number(currentWater) || 0} cc.`,
-    `Weight-based target range: ${targetMin}-${targetMax} cc. The lower bound is at least 2000 cc because the patient takes an SGLT-2 inhibitor ([REDACTED]). Do not suggest dropping below 2000 cc.`,
+    `Patient weight: ${hydrationBand().userWeight} kg. Weight-based target range: ${targetMin}-${targetMax} cc. The lower bound is at least 2000 cc because the patient takes an SGLT-2 inhibitor ([REDACTED]). Do not suggest dropping below 2000 cc.`,
     `Logged drinks today: ${JSON.stringify(list)}.`,
     'Judge whether intake so far is front-loaded (most volume already in the morning), back-loaded (little so far and the clock is late), or optimal.',
     'advice: Traditional Chinese, at most 60 words, covering exactly three stages — morning boost, afternoon steady, and evening taper before sleep. Mention remaining cc if still under the minimum. No diagnosis and no medication changes.',
@@ -448,6 +507,7 @@ export async function analyzeHydrationSchedule({ apiKey, currentWater, targetMin
 
 export async function evaluateLabs({ apiKey, labs, recentDays }) {
   const intake = averageIntake(recentDays)
+  const band = hydrationBand()
   const text = [
     'Evaluate the follow-up lab results against the 2026-09-05 baseline and the 11-12 month targets, then propose the next dynamic dietary phase.',
     'Baseline labs are in the system instruction. Use the chronological follow-up labs below as the trend since baseline.',
@@ -457,9 +517,9 @@ export async function evaluateLabs({ apiKey, labs, recentDays }) {
     `Daily intake summaries inside that 30-day window: ${JSON.stringify(recentDays)}`,
     ...userConfigLines(),
     'Compare lab trends with these actual eating habits before suggesting a phase change.',
-    'proposed_targets must stay inside clinical safety bounds: carbsMin and carbsMax within 100-180 g (NEVER ketogenic or ultra-low carb; euDKA risk on [REDACTED]), satFatMax <= 20 and satFatMin <= satFatMax (LDL-C), hydrationMin and hydrationMax within 2000-2500 cc (UAcr and urine specific gravity), exerciseTarget >= 20.',
+    `proposed_targets must stay inside clinical safety bounds: carbsMin and carbsMax within 100-180 g (NEVER ketogenic or ultra-low carb; euDKA risk on [REDACTED]), satFatMax <= 20 and satFatMin <= satFatMax (LDL-C), hydrationMin and hydrationMax within the weight-based range ${band.hydrationMin}-${band.hydrationMax} cc for ${band.userWeight} kg (never below 2000 cc; UAcr and urine specific gravity), exerciseTarget >= 20.`,
     'If labs are improving and the 30-day averages already sit inside those bounds, you may modestly unlock portions (for example a slightly larger multigrain rice serving or a planned weekend flex meal) while keeping proposed_targets inside the bounds above.',
-    'If labs worsen or averages already breach a limit, tighten targets inside the same bounds. Do not raise saturated fat above 20 g, do not drop carbohydrate below 100 g, and do not drop hydration below 2000 cc.',
+    `If labs worsen or averages already breach a limit, tighten targets inside the same bounds. Do not raise saturated fat above 20 g, do not drop carbohydrate below 100 g, and do not drop hydration below ${band.hydrationMin} cc (never below 2000 cc).`,
     'unlocking_summary: one or two Traditional Chinese sentences on whether meal portions can be increased safely.',
     'Remember: never recommend ketogenic / zero-carb eating ([REDACTED] + U-Ketones +++); prioritize saturated fat over dietary cholesterol; keep hydration and sodium guidance.',
   ].join('\n')

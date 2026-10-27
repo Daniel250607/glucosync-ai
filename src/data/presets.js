@@ -297,4 +297,4 @@ export function medsForSlot(slot) {
 
 export function medLabel(m) {
   return m.dosage ? `${m.name} ${m.dosage}` : m.name
-}
+}

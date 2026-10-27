@@ -482,19 +482,23 @@ function buildPairingUrl(payload) {
   return `${base}#qrpair=${encoded}`
 }
 
-function loadQrLib() {
-  if (window.qrcode) return Promise.resolve(window.qrcode)
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js'
-    s.onload = () => (window.qrcode ? resolve(window.qrcode) : reject(new Error('QR 函式庫載入失敗')))
-    s.onerror = () => reject(new Error('無法載入 QR 函式庫'))
-    document.head.appendChild(s)
-  })
+// QR library is bundled from npm (qrcode-generator) and lazy-loaded as its own chunk:
+// no runtime <script> injection from a third-party CDN.
+let qrFactory = null
+async function loadQrLib() {
+  if (qrFactory) return qrFactory
+  try {
+    const mod = await import('qrcode-generator')
+    qrFactory = mod.default || mod
+  } catch {
+    throw new Error('無法載入 QR 函式庫')
+  }
+  if (typeof qrFactory !== 'function') throw new Error('QR 函式庫載入失敗')
+  return qrFactory
 }
 
 function renderQrSvg(text) {
-  const qr = window.qrcode(0, 'M')
+  const qr = qrFactory(0, 'M')
   qr.addData(text)
   qr.make()
   return qr.createSvgTag({ scalable: true, margin: 2 })
@@ -895,7 +899,7 @@ const qrCountdownLabel = computed(() => {
       <div class="max-h-[90vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 sm:max-w-lg sm:rounded-2xl">
         <h2 class="text-lg font-semibold text-slate-800">設定</h2>
         <p class="mt-1 text-xs text-slate-500">
-          金鑰僅儲存於此瀏覽器的 localStorage，不會寫入程式碼。亦可使用 .env 的 VITE_* 變數。
+          金鑰僅儲存於此瀏覽器的 localStorage，不會寫入程式碼或公開網頁。（.env 的 VITE_GEMINI_API_KEY 只在本機 npm run dev 時生效，正式版不會打包。）
         </p>
 
         <div class="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
-import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, summarizeDay } from '../services/gemini.js'
+import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, summarizeDay, summarizeDayAI } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
 
 const props = defineProps({
@@ -683,6 +683,45 @@ const mealToShow = computed(() => {
     null
   )
 })
+
+// ---------- End-of-day AI summary ----------
+const summaryBusy = ref(false)
+const summaryError = ref('')
+async function runDaySummary() {
+  summaryError.value = ''
+  const apiKey = getGeminiKey()
+  if (!apiKey) {
+    summaryError.value = '尚未設定 Gemini API Key。'
+    emit('open-settings')
+    return
+  }
+  if (!(props.day.meals || []).length) {
+    summaryError.value = '請先記錄至少一餐。'
+    return
+  }
+  summaryBusy.value = true
+  try {
+    const result = await summarizeDayAI({
+      apiKey,
+      totals: summarizeDay(props.day),
+      meals: props.day.meals.map((m) => ({
+        time: m.time,
+        name: m.analysis?.meal_name || m.text,
+        tags: m.tags,
+        analyzed: !!m.analysis,
+      })),
+      meds: props.day.meds,
+    })
+    commit((d) => {
+      d.ai_summary = result
+    })
+  } catch (err) {
+    summaryError.value = err.message || String(err)
+    showToast(summaryError.value)
+  } finally {
+    summaryBusy.value = false
+  }
+}
 
 const ALERTS = [
   { key: 'glycemic_tg_alert', title: '血糖 / 三酸甘油酯' },
@@ -1509,5 +1548,45 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         </li>
       </ul>
     </section>
+
+    <!-- Daily AI summary (ported from the standalone build) -->
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <h2 class="font-semibold text-slate-800">🧠 今日 AI 總結</h2>
+      <button
+        type="button"
+        class="mt-3 w-full rounded-xl bg-indigo-600 py-3.5 font-semibold text-white disabled:opacity-50 active:bg-indigo-700"
+        :disabled="summaryBusy"
+        @click="runDaySummary"
+      >
+        {{ summaryBusy ? 'AI 總結中…' : day.ai_summary ? '🔄 重新產生今日總結' : '✨ 產生今日總結' }}
+      </button>
+      <p v-if="summaryError" class="mt-2 rounded-lg bg-rose-50 p-2 text-sm text-rose-700">{{ summaryError }}</p>
+      <div v-if="day.ai_summary" class="mt-3 space-y-3 text-sm text-slate-700">
+        <p class="rounded-xl bg-indigo-50 p-3 text-indigo-900">{{ day.ai_summary.overall_assessment }}</p>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <div
+            v-for="a in ALERTS"
+            :key="a.key"
+            class="rounded-xl border p-3"
+            :class="LEVEL_STYLE[day.ai_summary[a.key]?.level] || 'bg-slate-50 border-slate-200'"
+          >
+            <div class="flex items-center gap-2 text-sm font-semibold">
+              <span class="size-3 rounded-full" :class="DOT_STYLE[day.ai_summary[a.key]?.level]" />{{ a.title }}
+            </div>
+            <p class="mt-1 text-sm">{{ day.ai_summary[a.key]?.message }}</p>
+          </div>
+        </div>
+        <div v-if="day.ai_summary.highlights?.length">
+          <p class="font-medium text-slate-800">做得好</p>
+          <ul class="ml-5 list-disc"><li v-for="(h, i) in day.ai_summary.highlights" :key="i">{{ h }}</li></ul>
+        </div>
+        <div v-if="day.ai_summary.improvements?.length">
+          <p class="font-medium text-slate-800">可改善</p>
+          <ul class="ml-5 list-disc"><li v-for="(h, i) in day.ai_summary.improvements" :key="i">{{ h }}</li></ul>
+        </div>
+        <p><b>明日重點：</b>{{ day.ai_summary.tomorrow_focus }}</p>
+        <p class="text-xs text-slate-400">AI 建議僅供參考，不能取代醫師診斷。</p>
+      </div>
+    </section>
   </div>
-</template>
+</template>

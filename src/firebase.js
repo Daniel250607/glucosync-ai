@@ -44,7 +44,11 @@ export function saveSettings(settings) {
 }
 
 export function getGeminiKey() {
-  return loadSettings().geminiApiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
+  // The Gemini key is a SECRET: it only comes from this browser's settings (localStorage).
+  // VITE_* values are inlined into the public JS bundle, so the .env fallback is DEV-only
+  // (`npm run dev` on your own machine) and is stripped from production builds.
+  const devKey = import.meta.env.DEV ? import.meta.env.VITE_GEMINI_API_KEY : ''
+  return loadSettings().geminiApiKey || devKey || ''
 }
 
 // Accepts strict JSON or a pasted JS object literal ({ apiKey: "..." }).
@@ -71,17 +75,17 @@ export function parseFirebaseConfig(text) {
 function resolveFirebaseConfig() {
   const fromSettings = parseFirebaseConfig(loadSettings().firebaseConfig)
   if (fromSettings && fromSettings.projectId) return fromSettings
-  const e = import.meta.env
-  if (e.VITE_FIREBASE_API_KEY && e.VITE_FIREBASE_PROJECT_ID) {
-    return {
-      apiKey: e.VITE_FIREBASE_API_KEY,
-      authDomain: e.VITE_FIREBASE_AUTH_DOMAIN,
-      projectId: e.VITE_FIREBASE_PROJECT_ID,
-      storageBucket: e.VITE_FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: e.VITE_FIREBASE_MESSAGING_SENDER_ID,
-      appId: e.VITE_FIREBASE_APP_ID,
-    }
+  // Reference each VITE_* key explicitly. Aliasing `import.meta.env` to a variable makes Vite
+  // inline the WHOLE env object (every VITE_* value, e.g. a Gemini key) into the public bundle.
+  const fb = {
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
   }
+  if (fb.apiKey && fb.projectId) return fb
   return null
 }
 
