@@ -754,7 +754,35 @@
       ];
     }
 
+    // Max meal photos sent in one analysis request (keep in sync with DailyTracker).
+    var MAX_MEAL_IMAGES = 4;
+
+    // Normalize opts.images (array) + legacy single opts.image into a validated, capped list.
+    function normalizeMealImages(images, image) {
+      var list = (Array.isArray(images) ? images : []).concat(image ? [image] : []);
+      return list.filter(function (img) {
+        return img && typeof img.data === 'string' && img.data && /^image\/[a-z0-9.+-]+$/i.test(img.mimeType || '');
+      }).slice(0, MAX_MEAL_IMAGES);
+    }
+
+    // Prompt lines about today's activity vs the exercise target (activity never loosens safety bounds).
+    function exerciseContextLines(dayContext) {
+      var target = Number(live.targets.exerciseTarget) || 0;
+      var done = Math.max(0, Number(dayContext && dayContext.exercise_min) || 0);
+      var remaining = Math.max(0, target - done);
+      return [
+        'Exercise so far today: ' + done + ' min (exercise_min; details in exercise_logs above) vs the daily exercise target of ' + target + ' min.',
+        'Factor this activity into the glycemic / carbohydrate assessment (e.g. post-meal walking or marching blunts the glucose spike), but NEVER loosen the clinical safety bounds because of exercise: daily carbohydrate stays within 100-180 g and the user-configured carb range (never ketogenic or ultra-low carb; euDKA risk on [REDACTED]), and the saturated-fat limits stay unchanged.',
+        remaining > 0
+          ? 'The exercise target is NOT met yet: ' + remaining + ' min remaining. In actionable_advice, briefly remind the user that ' + remaining + ' more minutes are needed to reach the ' + target + '-min target and suggest post-meal marching in place or walking (餐後踏步/散步).'
+          : 'The exercise target is already met today; you may briefly acknowledge it in actionable_advice.'
+      ];
+    }
+
+    // Analyze a meal from free text and/or up to MAX_MEAL_IMAGES photos (all sent in ONE request).
+    // opts.image (single) is still accepted for backward compatibility.
     function analyzeMeal(opts) {
+      var imgs = normalizeMealImages(opts.images, opts.image);
       var lines = ['Analyze this meal and return the structured JSON.'];
       if ((opts.text || '').trim()) lines.push('Meal description: ' + opts.text.trim());
       if (opts.tags && opts.tags.length) lines.push('Modifiers applied by the user: ' + opts.tags.join(' '));
@@ -762,10 +790,15 @@
       if (opts.dayContext) {
         lines.push('Intake so far today (before this meal): ' + JSON.stringify(opts.dayContext) +
           '. Use it to judge the daily saturated-fat, sodium and carbohydrate budgets and hydration.');
+        lines = lines.concat(exerciseContextLines(opts.dayContext));
       }
-      if (opts.image) lines.push('A photo of the meal is attached.');
+      if (imgs.length === 1) lines.push('A photo of the meal is attached.');
+      else if (imgs.length > 1) {
+        lines.push(imgs.length + ' photos of the SAME meal are attached (e.g. different dishes, sides or drinks eaten together). ' +
+          'Treat them as one meal: identify every item across all photos, sum the nutrition for the whole meal, and do not double-count an item that appears in more than one photo.');
+      }
       var parts = [{ text: lines.join('\n') }];
-      if (opts.image) parts.push({ inlineData: { mimeType: opts.image.mimeType, data: opts.image.data } });
+      imgs.forEach(function (img) { parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } }); });
       return generate(opts.apiKey, parts, mealSchema);
     }
 
@@ -1273,7 +1306,9 @@
         // meal input
         var mealText = ref('');
         var selectedTags = ref([]);
-        var photo = ref(null);
+        var photos = ref([]); // [{ id, mimeType, data, preview }] compressed JPEGs, max MAX_MEAL_IMAGES
+        var photoPending = ref(0); // photos still being decoded/compressed
+        var photoGeneration = 0; // bumped on form reset so late results are discarded
         var busy = ref(false);
         var elapsed = ref(0);
         var error = ref('');
@@ -1362,31 +1397,76 @@
           updateCustom('presets', list);
         }
 
-        function onPhoto(e) {
-          var file = e.target.files && e.target.files[0];
-          if (!file) return;
-          var reader = new FileReader();
-          reader.onload = function () {
+        var MAX_PHOTO_BYTES = 15 * 1024 * 1024; // raw file limit before compression
+        var PHOTO_TYPE_RE = /^image\/(jpeg|png|webp|gif|bmp|heic|heif|avif)$/i;
+        var PHOTO_EXT_RE = /\.(jpe?g|png|webp|gif|bmp|heic|heif|avif)$/i;
+
+        // Decode via a temporary object URL (always revoked), resize to max 1024px, re-encode as JPEG 0.8.
+        function compressPhoto(file) {
+          return new Promise(function (resolve, reject) {
+            var url = URL.createObjectURL(file);
             var img = new Image();
             img.onload = function () {
-              var max = 1024;
-              var scale = Math.min(1, max / Math.max(img.width, img.height));
-              var canvas = document.createElement('canvas');
-              canvas.width = Math.round(img.width * scale);
-              canvas.height = Math.round(img.height * scale);
-              canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-              var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-              photo.value = { mimeType: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl };
+              URL.revokeObjectURL(url);
+              try {
+                var max = 1024;
+                var scale = Math.min(1, max / Math.max(img.width, img.height));
+                var canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(img.width * scale));
+                canvas.height = Math.max(1, Math.round(img.height * scale));
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                resolve({ mimeType: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl });
+              } catch (err) { reject(err); }
             };
-            img.src = reader.result;
-          };
-          reader.readAsDataURL(file);
-          e.target.value = '';
+            img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+            img.src = url;
+          });
+        }
+
+        function onPhoto(e) {
+          var files = Array.prototype.slice.call(e.target.files || []);
+          e.target.value = ''; // allow re-selecting the same file
+          if (!files.length) return;
+          error.value = '';
+          var problems = [];
+          var free = MAX_MEAL_IMAGES - photos.value.length - photoPending.value;
+          if (free <= 0) { error.value = '每餐最多 ' + MAX_MEAL_IMAGES + ' 張照片。'; return; }
+          var valid = files.filter(function (f) {
+            var typeOk = PHOTO_TYPE_RE.test(f.type) || (!f.type && PHOTO_EXT_RE.test(f.name || ''));
+            if (!typeOk) problems.push('僅支援 JPEG / PNG / WebP / HEIC 等圖片檔。');
+            else if (f.size > MAX_PHOTO_BYTES) problems.push('單張照片需小於 15 MB。');
+            return typeOk && f.size <= MAX_PHOTO_BYTES;
+          });
+          if (valid.length > free) problems.push('每餐最多 ' + MAX_MEAL_IMAGES + ' 張照片，多出的已略過。');
+          var gen = photoGeneration;
+          valid.slice(0, free).forEach(function (file) {
+            photoPending.value += 1;
+            compressPhoto(file).then(function (p) {
+              if (gen !== photoGeneration || photos.value.length >= MAX_MEAL_IMAGES) return;
+              photos.value = photos.value.concat([Object.assign({ id: 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) }, p)]);
+            }).catch(function () {
+              if (gen === photoGeneration) error.value = '有照片無法讀取，請改用 JPEG / PNG 再試一次。';
+            }).finally(function () {
+              if (gen === photoGeneration) photoPending.value = Math.max(0, photoPending.value - 1);
+            });
+          });
+          if (problems.length) {
+            error.value = problems.filter(function (m, i) { return problems.indexOf(m) === i; }).join(' ');
+          }
+        }
+
+        function removePhoto(id) {
+          photos.value = photos.value.filter(function (p) { return p.id !== id; });
         }
 
         async function submitMeal(withAI) {
           error.value = '';
-          if (!mealText.value.trim() && !photo.value) {
+          if (photoPending.value > 0) {
+            error.value = '照片處理中，請稍候再送出。';
+            return;
+          }
+          if (!mealText.value.trim() && !photos.value.length) {
             error.value = '請輸入餐點內容、選擇預設或上傳照片。';
             return;
           }
@@ -1401,7 +1481,7 @@
               delete dayCtx.date;
               entry.analysis = await analyzeMeal({
                 apiKey: apiKey, text: entry.text, tags: entry.tags,
-                image: photo.value ? { mimeType: photo.value.mimeType, data: photo.value.data } : null,
+                images: photos.value.map(function (p) { return { mimeType: p.mimeType, data: p.data }; }),
                 dayContext: dayCtx
               });
             } catch (err) {
@@ -1431,7 +1511,7 @@
             }
           });
           latestId.value = withAI ? id : null;
-          mealText.value = ''; selectedTags.value = []; photo.value = null;
+          mealText.value = ''; selectedTags.value = []; photos.value = []; photoPending.value = 0; photoGeneration += 1;
         }
 
         function removeMeal(id) {
@@ -1500,8 +1580,8 @@
           addExerciseLog: addExerciseLog, removeExerciseLog: removeExerciseLog, clearExerciseLogs: clearExerciseLogs,
           addExerciseTypePreset: addExerciseTypePreset, deleteExerciseTypePreset: deleteExerciseTypePreset, resetExerciseTypePresets: resetExerciseTypePresets,
           exerciseReached: exerciseReached,
-          mealText: mealText, selectedTags: selectedTags, photo: photo, busy: busy, elapsed: elapsed, error: error,
-          applyPreset: applyPreset, toggleTag: toggleTag, onPhoto: onPhoto, submitMeal: submitMeal, removeMeal: removeMeal,
+          mealText: mealText, selectedTags: selectedTags, photos: photos, photoPending: photoPending, MAX_MEAL_IMAGES: MAX_MEAL_IMAGES, busy: busy, elapsed: elapsed, error: error,
+          applyPreset: applyPreset, toggleTag: toggleTag, onPhoto: onPhoto, removePhoto: removePhoto, submitMeal: submitMeal, removeMeal: removeMeal,
           mealToShow: mealToShow, totals: totals, presetGroups: presetGroups,
           summaryBusy: summaryBusy, summaryError: summaryError, runDaySummary: runDaySummary
         };
@@ -1863,14 +1943,17 @@
 
     <div class="mt-2 flex flex-wrap items-center gap-2">
       <button class="rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200 active:bg-amber-100" @click="saveAsPreset">⭐ 存為常吃快選</button>
-      <label class="cursor-pointer rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-700 active:bg-slate-200">
-        📷 拍照 / 上傳
-        <input type="file" accept="image/*" class="hidden" @change="onPhoto" />
+      <label class="cursor-pointer rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-700 active:bg-slate-200"
+        :class="{ 'pointer-events-none opacity-50': photos.length + photoPending >= MAX_MEAL_IMAGES }">
+        📷 {{ photos.length ? '再加一張' : '拍照 / 上傳' }} ({{ photos.length }}/{{ MAX_MEAL_IMAGES }})
+        <input type="file" accept="image/*" multiple class="hidden" :disabled="photos.length + photoPending >= MAX_MEAL_IMAGES" @change="onPhoto" />
       </label>
-      <div v-if="photo" class="relative">
-        <img :src="photo.preview" alt="meal preview" class="size-14 rounded-lg object-cover" />
-        <button class="absolute -right-2 -top-2 size-6 rounded-full bg-slate-700 text-xs text-white" @click="photo = null">✕</button>
+      <div v-for="(p, i) in photos" :key="p.id" class="relative">
+        <img :src="p.preview" :alt="'meal preview ' + (i + 1)" class="size-14 rounded-lg object-cover" />
+        <button type="button" class="absolute -right-2 -top-2 size-6 rounded-full bg-slate-700 text-xs text-white"
+          :aria-label="'移除第 ' + (i + 1) + ' 張照片'" @click="removePhoto(p.id)">✕</button>
       </div>
+      <span v-if="photoPending" class="text-xs text-slate-500">照片處理中…</span>
     </div>
 
     <p v-if="error" class="mt-2 rounded-lg bg-rose-50 p-2 text-sm text-rose-700">{{ error }}</p>
@@ -1971,8 +2054,15 @@
       props: { days: { type: Object, required: true } },
       setup: function (props) {
         var range = ref(14);
-        var canvas = ref(null);
-        var chart = null;
+        // One canvas per chart: carbs + saturated fat, water, exercise.
+        var macroCanvas = ref(null);
+        var waterCanvas = ref(null);
+        var exerciseCanvas = ref(null);
+        // Chart section wrappers (scorecard click scrolls to the related chart).
+        var macroSection = ref(null);
+        var waterSection = ref(null);
+        var exerciseSection = ref(null);
+        var charts = { macro: null, water: null, exercise: null };
 
         var series = computed(function () {
           var keys = Object.keys(props.days).sort().slice(-range.value);
@@ -2001,7 +2091,8 @@
           return defs.map(function (def) {
             var now = compliance(curr, def.test);
             var before = compliance(prev, def.test);
-            var delta = before.total === now.total && now.pct != null && before.pct != null ? now.pct - before.pct : null;
+            // Compare whenever the previous period has at least one recorded day (day counts may differ).
+            var delta = before.total > 0 && now.pct != null && before.pct != null ? now.pct - before.pct : null;
             var badge = '尚無對照';
             var badgeClass = 'bg-slate-100 text-slate-500';
             if (delta != null) {
@@ -2013,8 +2104,15 @@
           });
         });
 
-        function tooltipExtras(day) {
-          if (!day) return [];
+        // Scorecard id -> chart section to scroll to.
+        var SECTION_FOR_CARD = { carbs: macroSection, sat: macroSection, water: waterSection, ex: exerciseSection };
+        function scrollToChart(id) {
+          var sec = SECTION_FOR_CARD[id];
+          var el = sec && sec.value;
+          if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function exerciseExtras(day) {
           var lines = [];
           var logs = (day.exercise_logs || []).filter(function (e) { return e && (e.type || Number(e.duration_min) || Number(e.reps)); });
           if (logs.length) {
@@ -2029,28 +2127,35 @@
           } else if (day.exercise_min > 0) {
             lines.push('🏃 運動 ' + day.exercise_min + 'm');
           }
-          var drinks = (day.drinks || []).filter(function (d) { return d && d.name; });
-          if (drinks.length) {
-            lines.push('🍵 ' + drinks.map(function (d) { return d.name + ' ' + (Number(d.volume_cc) || 0) + 'cc'; }).join(', '));
-          }
           return lines;
         }
 
-        function buildData() {
+        function drinkExtras(day) {
+          var drinks = (day.drinks || []).filter(function (d) { return d && d.name; });
+          return drinks.length
+            ? ['🍵 ' + drinks.map(function (d) { return d.name + ' ' + (Number(d.volume_cc) || 0) + 'cc'; }).join(', ')]
+            : [];
+        }
+
+        /** Tooltip extra lines. kind: 'exercise' | 'drinks' | undefined (both). */
+        function tooltipExtras(day, kind) {
+          if (!day) return [];
+          var lines = [];
+          if (!kind || kind === 'exercise') lines = lines.concat(exerciseExtras(day));
+          if (!kind || kind === 'drinks') lines = lines.concat(drinkExtras(day));
+          return lines;
+        }
+
+        function labels() { return series.value.map(function (d) { return d.date.slice(5); }); }
+        function flat(v) { return series.value.map(function () { return v; }); }
+
+        // Chart 1: carbs (bars, left axis) + saturated fat (line, right axis)
+        function buildMacroData() {
           var TARGETS = live.targets;
           var s = series.value;
-          var labels = s.map(function (d) { return d.date.slice(5); });
-          function flat(v) { return s.map(function () { return v; }); }
           return {
-            labels: labels,
+            labels: labels(),
             datasets: [
-              { type: 'line', label: '飲水 (cc)', data: s.map(function (d) { return d.hydration_cc; }), yAxisID: 'yWater',
-                borderColor: 'rgba(14,165,233,0.5)', backgroundColor: 'rgba(14,165,233,0.15)', fill: true, tension: 0.3, pointRadius: 0, order: 10 },
-              { type: 'line', label: '飲水下限 ' + TARGETS.hydrationMin, data: flat(TARGETS.hydrationMin), yAxisID: 'yWater',
-                borderColor: 'rgba(14,165,233,0.35)', borderDash: [2, 4], pointRadius: 0, borderWidth: 1, order: 10 },
-              { type: 'line', label: '飲水上限 ' + TARGETS.hydrationMax, data: flat(TARGETS.hydrationMax), yAxisID: 'yWater',
-                borderColor: 'rgba(14,165,233,0.35)', backgroundColor: 'rgba(14,165,233,0.08)', fill: '-1',
-                borderDash: [2, 4], pointRadius: 0, borderWidth: 1, order: 10 },
               { type: 'bar', label: '碳水 (g)', data: s.map(function (d) { return d.carbs_g; }), yAxisID: 'yG',
                 backgroundColor: s.map(function (d) {
                   return d.carbs_g && (d.carbs_g < TARGETS.carbsMin || d.carbs_g > TARGETS.carbsMax)
@@ -2065,14 +2170,48 @@
               { type: 'line', label: '飽和脂肪上限 ' + TARGETS.satFatMax + 'g', data: flat(TARGETS.satFatMax), yAxisID: 'ySat',
                 borderColor: 'rgba(220,38,38,0.9)', borderDash: [3, 3], borderWidth: 1.5, pointRadius: 0, order: 1 },
               { type: 'line', label: '飽和脂肪建議 ' + TARGETS.satFatMin + 'g', data: flat(TARGETS.satFatMin), yAxisID: 'ySat',
-                borderColor: 'rgba(124,58,237,0.5)', borderDash: [3, 3], borderWidth: 1, pointRadius: 0, order: 1 },
-              { type: 'line', label: '運動 (分)', data: s.map(function (d) { return d.exercise_min > 0 ? d.exercise_min : null; }), yAxisID: 'yEx',
-                showLine: false, pointStyle: 'triangle', pointRadius: 8, pointBackgroundColor: '#0d9488', pointBorderColor: '#fff', order: 0 }
+                borderColor: 'rgba(124,58,237,0.5)', borderDash: [3, 3], borderWidth: 1, pointRadius: 0, order: 1 }
             ]
           };
         }
 
-        function buildOptions() {
+        // Chart 2: water area + hydrationMin–hydrationMax safe band
+        function buildWaterData() {
+          var TARGETS = live.targets;
+          var s = series.value;
+          return {
+            labels: labels(),
+            datasets: [
+              { type: 'line', label: '飲水 (cc)', data: s.map(function (d) { return d.hydration_cc; }), yAxisID: 'yWater',
+                borderColor: 'rgba(14,165,233,0.8)', backgroundColor: 'rgba(14,165,233,0.15)', fill: 'origin', tension: 0.3,
+                pointRadius: 3, pointBackgroundColor: 'rgba(14,165,233,0.9)', borderWidth: 2, order: 1 },
+              { type: 'line', label: '飲水下限 ' + TARGETS.hydrationMin, data: flat(TARGETS.hydrationMin), yAxisID: 'yWater',
+                borderColor: 'rgba(14,165,233,0.35)', borderDash: [2, 4], pointRadius: 0, borderWidth: 1, fill: false, order: 2 },
+              { type: 'line', label: '飲水上限 ' + TARGETS.hydrationMax, data: flat(TARGETS.hydrationMax), yAxisID: 'yWater',
+                borderColor: 'rgba(14,165,233,0.35)', backgroundColor: 'rgba(14,165,233,0.08)', fill: '-1',
+                borderDash: [2, 4], pointRadius: 0, borderWidth: 1, order: 2 }
+            ]
+          };
+        }
+
+        // Chart 3: exercise minutes + goal line (live.targets.exerciseTarget)
+        function buildExerciseData() {
+          var TARGETS = live.targets;
+          var s = series.value;
+          return {
+            labels: labels(),
+            datasets: [
+              { type: 'bar', label: '運動 (分)', data: s.map(function (d) { return d.exercise_min || 0; }), yAxisID: 'yEx',
+                backgroundColor: s.map(function (d) {
+                  return (d.exercise_min || 0) >= TARGETS.exerciseTarget ? '#0d9488' : 'rgba(13,148,136,0.45)';
+                }), borderRadius: 4, order: 2 },
+              { type: 'line', label: '運動目標 ' + TARGETS.exerciseTarget + ' 分', data: flat(TARGETS.exerciseTarget), yAxisID: 'yEx',
+                borderColor: 'rgba(15,118,110,0.9)', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, order: 1 }
+            ]
+          };
+        }
+
+        function baseOptions(extraKind, scales) {
           return {
             responsive: true, maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
@@ -2081,48 +2220,86 @@
               tooltip: {
                 callbacks: {
                   afterBody: function (items) {
+                    if (!extraKind) return [];
                     var index = items && items[0] ? items[0].dataIndex : -1;
-                    return tooltipExtras(series.value[index]);
+                    return tooltipExtras(series.value[index], extraKind);
                   }
                 }
               }
             },
-            scales: {
-              x: { grid: { display: false } },
-              yG: { type: 'linear', position: 'left', beginAtZero: true, suggestedMax: 220, title: { display: true, text: '碳水 (g)' } },
-              ySat: { type: 'linear', position: 'right', beginAtZero: true, suggestedMax: 30, grid: { drawOnChartArea: false }, title: { display: true, text: '飽和脂肪 (g)' } },
-              yWater: { type: 'linear', display: false, beginAtZero: true, suggestedMax: 3000 },
-              yEx: { type: 'linear', display: false, beginAtZero: true, suggestedMax: 60 }
-            }
+            scales: Object.assign({ x: { grid: { display: false } } }, scales)
           };
         }
 
-        function render() {
-          if (!canvas.value) return;
-          if (chart) chart.destroy();
-          if (typeof Chart === 'undefined') return;
-          chart = new Chart(canvas.value, { type: 'bar', data: buildData(), options: buildOptions() });
+        function buildMacroOptions() {
+          return baseOptions(null, {
+            yG: { type: 'linear', position: 'left', beginAtZero: true, suggestedMax: 220, title: { display: true, text: '碳水 (g)' } },
+            ySat: { type: 'linear', position: 'right', beginAtZero: true, suggestedMax: 30, grid: { drawOnChartArea: false }, title: { display: true, text: '飽和脂肪 (g)' } }
+          });
+        }
+        function buildWaterOptions() {
+          return baseOptions('drinks', {
+            yWater: { type: 'linear', position: 'left', beginAtZero: true, suggestedMax: 3000, title: { display: true, text: '飲水 (cc)' } }
+          });
+        }
+        function buildExerciseOptions() {
+          return baseOptions('exercise', {
+            yEx: { type: 'linear', position: 'left', beginAtZero: true, suggestedMax: 60, title: { display: true, text: '運動 (分)' } }
+          });
         }
 
-        function hideTooltipOnOutsideTap(e) {
-          if (!chart || !canvas.value || canvas.value.contains(e.target)) return;
-          chart.setActiveElements([]);
-          chart.tooltip.setActiveElements([], { x: 0, y: 0 });
-          chart.update('none');
+        function destroyCharts() {
+          Object.keys(charts).forEach(function (key) {
+            if (charts[key]) charts[key].destroy();
+            charts[key] = null;
+          });
         }
+
+        function render() {
+          destroyCharts();
+          if (typeof Chart === 'undefined') return;
+          if (macroCanvas.value) {
+            charts.macro = new Chart(macroCanvas.value, { type: 'bar', data: buildMacroData(), options: buildMacroOptions() });
+          }
+          if (waterCanvas.value) {
+            charts.water = new Chart(waterCanvas.value, { type: 'line', data: buildWaterData(), options: buildWaterOptions() });
+          }
+          if (exerciseCanvas.value) {
+            charts.exercise = new Chart(exerciseCanvas.value, { type: 'bar', data: buildExerciseData(), options: buildExerciseOptions() });
+          }
+        }
+
+        // Mobile: Chart.js keeps the tooltip open after a tap; hide it when tapping anywhere outside that chart.
+        function hideTooltipOnOutsideTap(e) {
+          Object.keys(charts).forEach(function (key) {
+            var chart = charts[key];
+            if (!chart || (chart.canvas && chart.canvas.contains(e.target))) return;
+            var tip = chart.tooltip;
+            if (!chart.getActiveElements().length && !(tip && tip.getActiveElements().length)) return;
+            chart.setActiveElements([]);
+            if (tip) tip.setActiveElements([], { x: 0, y: 0 });
+            chart.update('none');
+          });
+        }
+
         onMounted(function () {
           render();
           document.addEventListener('pointerdown', hideTooltipOnOutsideTap);
           document.addEventListener('touchstart', hideTooltipOnOutsideTap, { passive: true });
         });
+        // Re-render when data or the user-configured targets change.
         watch([series, function () { return Object.assign({}, live.targets); }], render);
         onBeforeUnmount(function () {
           document.removeEventListener('pointerdown', hideTooltipOnOutsideTap);
-          document.removeEventListener('touchstart', hideTooltipOnOutsideTap);
-          if (chart) chart.destroy();
+          document.removeEventListener('touchstart', hideTooltipOnOutsideTap, { passive: true });
+          destroyCharts();
         });
 
-        return { range: range, canvas: canvas, series: series, scorecards: scorecards, live: live };
+        return {
+          range: range, series: series, scorecards: scorecards, live: live, scrollToChart: scrollToChart,
+          macroCanvas: macroCanvas, waterCanvas: waterCanvas, exerciseCanvas: exerciseCanvas,
+          macroSection: macroSection, waterSection: waterSection, exerciseSection: exerciseSection
+        };
       },
       template: `
 <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -2134,7 +2311,9 @@
     </div>
   </div>
   <div v-if="series.length" class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-    <article v-for="card in scorecards" :key="card.id" class="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+    <article v-for="card in scorecards" :key="card.id" class="cursor-pointer rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200 active:bg-slate-100"
+      role="button" tabindex="0" :aria-label="card.label + ' 圖表'"
+      @click="scrollToChart(card.id)" @keydown.enter.prevent="scrollToChart(card.id)" @keydown.space.prevent="scrollToChart(card.id)">
       <p class="text-xs text-slate-500">{{ card.label }}</p>
       <div class="mt-1 flex items-end justify-between gap-1">
         <p class="text-2xl font-semibold tabular-nums text-slate-800">{{ card.pct == null ? '—' : card.pct + '%' }}</p>
@@ -2144,8 +2323,21 @@
     </article>
   </div>
   <p v-if="!series.length" class="mt-6 text-center text-sm text-slate-400">尚無資料。請先在「今日記錄」分頁記錄飲食、飲水與運動。</p>
-  <div class="mt-3 h-80 sm:h-96" :class="{ hidden: !series.length }"><canvas ref="canvas"></canvas></div>
-  <p class="mt-2 text-xs text-slate-400">碳水下限用於避免過低碳水 ([REDACTED] + 酮體風險)；飽和脂肪嚴格上限 {{ live.targets.satFatMin }}-{{ live.targets.satFatMax }}g；飲水安全區 {{ live.targets.hydrationMin }}-{{ live.targets.hydrationMax }}cc；▲ 為運動累計分鐘數。</p>
+  <div :class="{ hidden: !series.length }">
+    <div ref="macroSection" class="mt-4 scroll-mt-24 sm:scroll-mt-32" data-chart="macro">
+      <h3 class="text-sm font-medium text-slate-700">🍚 碳水與飽和脂肪</h3>
+      <div class="mt-2 h-72 sm:h-80"><canvas ref="macroCanvas"></canvas></div>
+    </div>
+    <div ref="waterSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="water">
+      <h3 class="text-sm font-medium text-slate-700">💧 飲水</h3>
+      <div class="mt-2 h-56 sm:h-64"><canvas ref="waterCanvas"></canvas></div>
+    </div>
+    <div ref="exerciseSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="exercise">
+      <h3 class="text-sm font-medium text-slate-700">🏃 運動</h3>
+      <div class="mt-2 h-56 sm:h-64"><canvas ref="exerciseCanvas"></canvas></div>
+    </div>
+  </div>
+  <p class="mt-2 text-xs text-slate-400">碳水下限用於避免過低碳水 ([REDACTED] + 酮體風險)；飽和脂肪嚴格上限 {{ live.targets.satFatMin }}-{{ live.targets.satFatMax }}g；飲水安全區 {{ live.targets.hydrationMin }}-{{ live.targets.hydrationMax }}cc；運動長條為當日運動累計分鐘數 (目標 ≥ {{ live.targets.exerciseTarget }} 分)。</p>
 </section>`
     };
 

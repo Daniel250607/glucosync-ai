@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
-import { analyzeHydrationSchedule, analyzeMeal, summarizeDay } from '../services/gemini.js'
+import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
 
 const props = defineProps({
@@ -389,7 +389,9 @@ const exerciseReached = computed(() => (props.day.exercise_min || 0) >= TARGETS.
 // ---------- meal input ----------
 const mealText = ref('')
 const selectedTags = ref([])
-const photo = ref(null)
+const photos = ref([]) // [{ id, mimeType, data, preview }] compressed JPEGs, max MAX_MEAL_IMAGES
+const photoPending = ref(0) // photos still being decoded/compressed
+let photoGeneration = 0 // bumped on form reset so late results are discarded
 const busy = ref(false)
 const elapsed = ref(0)
 const error = ref('')
@@ -519,37 +521,93 @@ function saveAsPreset() {
   updateCustom('presets', list)
 }
 
-function onPhoto(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = () => {
+const MAX_PHOTO_BYTES = 15 * 1024 * 1024 // raw file limit before compression
+const PHOTO_TYPE_RE = /^image\/(jpeg|png|webp|gif|bmp|heic|heif|avif)$/i
+const PHOTO_EXT_RE = /\.(jpe?g|png|webp|gif|bmp|heic|heif|avif)$/i
+
+/** Decode via a temporary object URL (always revoked), resize to max 1024px, re-encode as JPEG 0.8. */
+function compressPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
     const img = new Image()
     img.onload = () => {
-      const max = 1024
-      const scale = Math.min(1, max / Math.max(img.width, img.height))
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.round(img.width * scale)
-      canvas.height = Math.round(img.height * scale)
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
-      photo.value = { mimeType: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl }
+      URL.revokeObjectURL(url)
+      try {
+        const max = 1024
+        const scale = Math.min(1, max / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(img.width * scale))
+        canvas.height = Math.max(1, Math.round(img.height * scale))
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
+        resolve({ mimeType: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl })
+      } catch (err) {
+        reject(err)
+      }
     }
-    img.src = reader.result
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('decode failed'))
+    }
+    img.src = url
+  })
+}
+
+function onPhoto(e) {
+  const files = Array.from(e.target.files || [])
+  e.target.value = '' // allow re-selecting the same file
+  if (!files.length) return
+  error.value = ''
+  const problems = []
+  const free = MAX_MEAL_IMAGES - photos.value.length - photoPending.value
+  if (free <= 0) {
+    error.value = `每餐最多 ${MAX_MEAL_IMAGES} 張照片。`
+    return
   }
-  reader.readAsDataURL(file)
-  e.target.value = ''
+  const valid = files.filter((f) => {
+    const typeOk = PHOTO_TYPE_RE.test(f.type) || (!f.type && PHOTO_EXT_RE.test(f.name || ''))
+    if (!typeOk) problems.push('僅支援 JPEG / PNG / WebP / HEIC 等圖片檔。')
+    else if (f.size > MAX_PHOTO_BYTES) problems.push('單張照片需小於 15 MB。')
+    return typeOk && f.size <= MAX_PHOTO_BYTES
+  })
+  if (valid.length > free) problems.push(`每餐最多 ${MAX_MEAL_IMAGES} 張照片，多出的已略過。`)
+  const gen = photoGeneration
+  for (const file of valid.slice(0, free)) {
+    photoPending.value += 1
+    compressPhoto(file)
+      .then((p) => {
+        if (gen !== photoGeneration || photos.value.length >= MAX_MEAL_IMAGES) return
+        photos.value = [...photos.value, { id: `ph-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...p }]
+      })
+      .catch(() => {
+        if (gen === photoGeneration) error.value = '有照片無法讀取，請改用 JPEG / PNG 再試一次。'
+      })
+      .finally(() => {
+        if (gen === photoGeneration) photoPending.value = Math.max(0, photoPending.value - 1)
+      })
+  }
+  if (problems.length) error.value = [...new Set(problems)].join(' ')
+}
+
+function removePhoto(id) {
+  photos.value = photos.value.filter((p) => p.id !== id)
 }
 
 function resetMealForm() {
   mealText.value = ''
   selectedTags.value = []
-  photo.value = null
+  photos.value = []
+  photoPending.value = 0
+  photoGeneration += 1
 }
 
 async function submitMeal(withAI) {
   error.value = ''
-  if (!mealText.value.trim() && !photo.value) {
+  if (photoPending.value > 0) {
+    error.value = '照片處理中，請稍候再送出。'
+    return
+  }
+  if (!mealText.value.trim() && !photos.value.length) {
     error.value = '請輸入餐點內容、選擇預設或上傳照片。'
     return
   }
@@ -575,7 +633,7 @@ async function submitMeal(withAI) {
         apiKey,
         text: entry.text,
         tags: entry.tags,
-        image: photo.value ? { mimeType: photo.value.mimeType, data: photo.value.data } : null,
+        images: photos.value.map((p) => ({ mimeType: p.mimeType, data: p.data })),
         dayContext: ctx,
       })
     } catch (err) {
@@ -1339,19 +1397,33 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         >
           ⭐ 存為常吃快選
         </button>
-        <label class="cursor-pointer rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-700 active:bg-slate-200">
-          📷 拍照 / 上傳
-          <input type="file" accept="image/*" capture="environment" class="hidden" @change="onPhoto" />
+        <label
+          class="cursor-pointer rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-700 active:bg-slate-200"
+          :class="{ 'pointer-events-none opacity-50': photos.length + photoPending >= MAX_MEAL_IMAGES }"
+        >
+          📷 {{ photos.length ? '再加一張' : '拍照 / 上傳' }} ({{ photos.length }}/{{ MAX_MEAL_IMAGES }})
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            multiple
+            class="hidden"
+            :disabled="photos.length + photoPending >= MAX_MEAL_IMAGES"
+            @change="onPhoto"
+          />
         </label>
-        <div v-if="photo" class="relative">
-          <img :src="photo.preview" alt="meal preview" class="size-14 rounded-lg object-cover" />
+        <div v-for="(p, i) in photos" :key="p.id" class="relative">
+          <img :src="p.preview" :alt="`meal preview ${i + 1}`" class="size-14 rounded-lg object-cover" />
           <button
+            type="button"
             class="absolute -right-2 -top-2 size-6 rounded-full bg-slate-700 text-xs text-white"
-            @click="photo = null"
+            :aria-label="`移除第 ${i + 1} 張照片`"
+            @click="removePhoto(p.id)"
           >
             ✕
           </button>
         </div>
+        <span v-if="photoPending" class="text-xs text-slate-500">照片處理中…</span>
       </div>
 
       <p v-if="error" class="mt-2 rounded-lg bg-rose-50 p-2 text-sm text-rose-700">{{ error }}</p>

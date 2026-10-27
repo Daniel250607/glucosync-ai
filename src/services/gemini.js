@@ -285,11 +285,38 @@ function userConfigLines() {
 }
 
 // ---------- Public API ----------
+/** Max meal photos sent in one analysis request (keep in sync with DailyTracker.vue). */
+export const MAX_MEAL_IMAGES = 4
+
+/** Normalize `images` (array) + legacy single `image` into a validated, capped list. */
+function normalizeMealImages(images, image) {
+  const list = [...(Array.isArray(images) ? images : []), ...(image ? [image] : [])]
+  return list
+    .filter((img) => img && typeof img.data === 'string' && img.data && /^image\/[a-z0-9.+-]+$/i.test(img.mimeType || ''))
+    .slice(0, MAX_MEAL_IMAGES)
+}
+
+/** Prompt lines about today's activity vs the exercise target (activity never loosens safety bounds). */
+function exerciseContextLines(dayContext) {
+  const target = Number(live.targets.exerciseTarget) || 0
+  const done = Math.max(0, Number(dayContext?.exercise_min) || 0)
+  const remaining = Math.max(0, target - done)
+  return [
+    `Exercise so far today: ${done} min (exercise_min; details in exercise_logs above) vs the daily exercise target of ${target} min.`,
+    'Factor this activity into the glycemic / carbohydrate assessment (e.g. post-meal walking or marching blunts the glucose spike), but NEVER loosen the clinical safety bounds because of exercise: daily carbohydrate stays within 100-180 g and the user-configured carb range (never ketogenic or ultra-low carb; euDKA risk on [REDACTED]), and the saturated-fat limits stay unchanged.',
+    remaining > 0
+      ? `The exercise target is NOT met yet: ${remaining} min remaining. In actionable_advice, briefly remind the user that ${remaining} more minutes are needed to reach the ${target}-min target and suggest post-meal marching in place or walking (餐後踏步/散步).`
+      : 'The exercise target is already met today; you may briefly acknowledge it in actionable_advice.',
+  ]
+}
+
 /**
- * Analyze a meal from free text and/or a photo.
- * @param {{apiKey:string, text?:string, tags?:string[], image?:{mimeType:string,data:string}, dayContext?:object}} opts
+ * Analyze a meal from free text and/or up to MAX_MEAL_IMAGES photos (all sent in ONE request).
+ * @param {{apiKey:string, text?:string, tags?:string[], images?:{mimeType:string,data:string}[], image?:{mimeType:string,data:string}, dayContext?:object}} opts
+ *   `image` (single) is still accepted for backward compatibility.
  */
-export async function analyzeMeal({ apiKey, text = '', tags = [], image = null, dayContext = null }) {
+export async function analyzeMeal({ apiKey, text = '', tags = [], images = [], image = null, dayContext = null }) {
+  const imgs = normalizeMealImages(images, image)
   const lines = ['Analyze this meal and return the structured JSON.']
   if (text.trim()) lines.push(`Meal description: ${text.trim()}`)
   if (tags.length) lines.push(`Modifiers applied by the user: ${tags.join(' ')}`)
@@ -298,11 +325,17 @@ export async function analyzeMeal({ apiKey, text = '', tags = [], image = null, 
     lines.push(
       `Intake so far today (before this meal): ${JSON.stringify(dayContext)}. Use it to judge the daily saturated-fat, sodium and carbohydrate budgets and hydration.`,
     )
+    lines.push(...exerciseContextLines(dayContext))
   }
-  if (image) lines.push('A photo of the meal is attached.')
+  if (imgs.length === 1) lines.push('A photo of the meal is attached.')
+  else if (imgs.length > 1) {
+    lines.push(
+      `${imgs.length} photos of the SAME meal are attached (e.g. different dishes, sides or drinks eaten together). Treat them as one meal: identify every item across all photos, sum the nutrition for the whole meal, and do not double-count an item that appears in more than one photo.`,
+    )
+  }
 
   const parts = [{ text: lines.join('\n') }]
-  if (image) parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } })
+  for (const img of imgs) parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } })
   return generate({ apiKey, parts, schema: mealSchema })
 }
 
