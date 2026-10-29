@@ -1631,21 +1631,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           class="cursor-pointer rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-700 active:bg-slate-200"
           :class="{ 'pointer-events-none opacity-50': photos.length + photoPending >= MAX_MEAL_IMAGES }"
         >
-          📷 拍照
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            class="hidden"
-            :disabled="photos.length + photoPending >= MAX_MEAL_IMAGES"
-            @change="onPhoto"
-          />
-        </label>
-        <label
-          class="cursor-pointer rounded-xl bg-slate-100 px-4 py-2.5 text-sm text-slate-700 active:bg-slate-200"
-          :class="{ 'pointer-events-none opacity-50': photos.length + photoPending >= MAX_MEAL_IMAGES }"
-        >
-          🖼️ 相簿 ({{ photos.length }}/{{ MAX_MEAL_IMAGES }})
+          📷 {{ photos.length ? '再加一張' : '拍照 / 上傳' }} ({{ photos.length }}/{{ MAX_MEAL_IMAGES }})
           <input
             type="file"
             accept="image/*"
