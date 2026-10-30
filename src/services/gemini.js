@@ -1,6 +1,6 @@
 // Gemini client using Structured Outputs (JSON Schema).
 // The API key and model ID are never hardcoded: they are read from user settings / env.
-import { BASELINE_DATE, hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
+import { getBaselineDate, hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
 import { followUpLabRecords, labContextBlock } from '../data/labContext.js'
 import { sickPromptContext } from '../data/sickDay.js'
 import { loadSettings } from '../firebase.js'
@@ -550,7 +550,7 @@ export async function evaluateLabs({ apiKey, labs, recentDays }) {
   const intake = averageIntake(recentDays)
   const band = hydrationBand()
   const text = [
-    `Evaluate the follow-up lab results against the ${BASELINE_DATE} baseline and the 11-12 month targets, then propose the next dynamic dietary phase.`,
+    `Evaluate the follow-up lab results against the ${getBaselineDate() || 'recorded'} baseline and the 11-12 month targets, then propose the next dynamic dietary phase.`,
     'Baseline values, the latest value per field, trends and target status are in the LAB DATA block of the system instruction. Use the chronological follow-up records below for the trajectory between tests.',
     `Logged follow-up labs (chronological, sanitized; numeric values and urine dipstick grades only): ${JSON.stringify(followUpLabRecords(labs))}`,
     `Recent 30-day intake averages (${intake.logged_days} days with records; each average uses only the days where that item was logged): average carbohydrates ${intake.avg_carbs_g} g/day and saturated fat ${intake.avg_saturated_fat_g} g/day over ${intake.macro_days} days with analyzed meals, average hydration ${intake.avg_hydration_cc} cc/day over ${intake.hydration_days} days with water logged, average exercise ${intake.avg_exercise_min} min/day over ${intake.logged_days} days. Days without records are missing data, not zero intake.`,

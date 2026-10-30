@@ -1,0 +1,35 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import { applyCustomConfig, getBaselineDate, LAB_FIELDS } from '../presets.js'
+import { labContextBlock, latestLabSnapshot } from '../labContext.js'
+
+afterEach(() => applyCustomConfig({}))
+
+describe('lab baseline lives in custom config', () => {
+  it('is empty by default and ships no values', () => {
+    expect(getBaselineDate()).toBe('')
+    expect(LAB_FIELDS.every((f) => f.baseline === null)).toBe(true)
+    expect(latestLabSnapshot([])).toEqual([])
+    expect(labContextBlock([])).toContain('Baseline date: not recorded')
+  })
+
+  it('without baseline a follow-up still yields a row, trend "no baseline"', () => {
+    const rows = latestLabSnapshot([{ date: '2026-12-01', hba1c: 8 }])
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ key: 'hba1c', latest: 8, trend: 'no baseline' })
+  })
+
+  it('applies and sanitizes a configured baseline', () => {
+    applyCustomConfig({
+      labBaseline: { date: '2026-01-01', values: { hba1c: '9', ldl: 'x', u_ketones: '++', u_sugar: 'bogus' } },
+    })
+    expect(getBaselineDate()).toBe('2026-01-01')
+    const rows = latestLabSnapshot([])
+    expect(rows.map((r) => r.key)).toEqual(['hba1c', 'u_ketones'])
+    expect(rows[0]).toMatchObject({ baseline: null, latest: 9, source: 'baseline' })
+  })
+
+  it('rejects a malformed baseline date', () => {
+    applyCustomConfig({ labBaseline: { date: '2026/01/01', values: { hba1c: 9 } } })
+    expect(getBaselineDate()).toBe('')
+  })
+})

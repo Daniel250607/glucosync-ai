@@ -4,7 +4,7 @@
 // imported junk never reach a chart. Charts are destroyed before every re-render and on unmount.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Chart, LineController, LineElement, PointElement, CategoryScale, LinearScale, Legend, Tooltip, Filler } from 'chart.js'
-import { BASELINE_DATE, LAB_FIELDS } from '../data/presets.js'
+import { getBaselineDate, LAB_FIELDS } from '../data/presets.js'
 import { sanitizeLabDate, sanitizeLabNumber } from '../data/labContext.js'
 
 Chart.register(LineController, LineElement, PointElement, CategoryScale, LinearScale, Legend, Tooltip, Filler)
@@ -24,7 +24,8 @@ const fields = CHART_KEYS.map((k) => LAB_FIELDS.find((f) => f.key === k)).filter
 const seriesByField = computed(() => {
   const out = {}
   for (const f of fields) {
-    const byDate = new Map([[BASELINE_DATE, { date: BASELINE_DATE, value: f.baseline, baseline: true }]])
+    const bd = getBaselineDate()
+    const byDate = new Map(bd && f.baseline != null ? [[bd, { date: bd, value: f.baseline, baseline: true }]] : [])
     for (const raw of Array.isArray(props.labs) ? props.labs : []) {
       if (!raw || typeof raw !== 'object') continue
       const date = sanitizeLabDate(raw.date)
@@ -175,9 +176,9 @@ onBeforeUnmount(() => {
 <template>
   <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" data-testid="lab-trends">
     <h2 class="font-semibold text-slate-800">📉 檢驗趨勢圖</h2>
-    <p class="mt-1 text-xs text-slate-500">基準值（{{ BASELINE_DATE }}）＋每次追蹤結果；虛線＝目標值，淺綠帶＝目標範圍。綠點＝已達標、紅點＝未達標。</p>
+    <p class="mt-1 text-xs text-slate-500">基準值（{{ getBaselineDate() || '未設定' }}）＋每次追蹤結果；虛線＝目標值，淺綠帶＝目標範圍。綠點＝已達標、紅點＝未達標。</p>
     <p v-if="!hasAnyFollowUp" class="mt-4 rounded-xl bg-slate-50 p-4 text-center text-sm text-slate-500" data-testid="lab-trends-empty">
-      目前只有基準值（{{ BASELINE_DATE }}），尚無追蹤檢驗。<br />在下方「新增追蹤檢驗結果」輸入下一次的報告後，這裡就會顯示趨勢圖。
+      目前只有基準值（{{ getBaselineDate() || '未設定' }}），尚無追蹤檢驗。<br />在下方「新增追蹤檢驗結果」輸入下一次的報告後，這裡就會顯示趨勢圖。
     </p>
     <div v-else class="mt-3 grid gap-4 md:grid-cols-2">
       <div v-for="f in chartFields" :key="f.key" :data-lab-chart="f.key">

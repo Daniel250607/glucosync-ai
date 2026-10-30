@@ -133,32 +133,46 @@ export const MEDICATIONS = [
   { id: 'roty', name: '[REDACTED] ([REDACTED])', dosage: '20mg', timing: 'morning' },
 ]
 
-// Baseline lab values (2026-09-05) and follow-up targets.
+// Lab field definitions and follow-up targets. Baseline values are PERSONAL health data: they are
+// never shipped in the code but entered by the user (section `labBaseline` of the custom config),
+// and exposed through the reactive `baseline` getters below (null until entered).
 // `dir` = "lt" means lower is better (value must be below `target`);
-export const LAB_FIELDS = [
-  { key: 'hba1c', label: 'HbA1c', unit: '%', baseline: null, target: 7.5, targetLabel: '< 7.0-7.5', dir: 'lt' },
-  { key: 'ac_sugar', label: 'AC Sugar', unit: 'mg/dL', baseline: null, target: 130, targetLabel: '< 110-130', dir: 'lt' },
-  { key: 'ldl', label: 'LDL-C', unit: 'mg/dL', baseline: null, target: 100, targetLabel: '< 100', dir: 'lt' },
-  { key: 'tg', label: 'TG', unit: 'mg/dL', baseline: null, target: 150, targetLabel: '< 150', dir: 'lt' },
-  { key: 't_cho', label: 'T-Cho', unit: 'mg/dL', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'hdl', label: 'HDL-C', unit: 'mg/dL', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'uacr', label: 'UAcr', unit: '', baseline: null, target: 30, targetLabel: '< 30', dir: 'lt' },
-  { key: 'micro_albumin', label: 'Micro-Albumin', unit: 'mg/L', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'creatinine', label: 'Creatinine', unit: 'mg/dL', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'egfr', label: 'eGFR', unit: '', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'bun', label: 'BUN', unit: 'mg/dL', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'uric_acid', label: 'Uric Acid', unit: 'mg/dL', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 's_gpt', label: 'S-GPT', unit: 'U/L', baseline: null, target: null, targetLabel: '—', dir: null },
-  { key: 'u_sg', label: 'U-Specific Gravity', unit: '', baseline: null, target: null, targetLabel: '1.005-1.030', dir: null },
+const LAB_FIELD_DEFS = [
+  { key: 'hba1c', label: 'HbA1c', unit: '%', target: 7.5, targetLabel: '< 7.0-7.5', dir: 'lt' },
+  { key: 'ac_sugar', label: 'AC Sugar', unit: 'mg/dL', target: 130, targetLabel: '< 110-130', dir: 'lt' },
+  { key: 'ldl', label: 'LDL-C', unit: 'mg/dL', target: 100, targetLabel: '< 100', dir: 'lt' },
+  { key: 'tg', label: 'TG', unit: 'mg/dL', target: 150, targetLabel: '< 150', dir: 'lt' },
+  { key: 't_cho', label: 'T-Cho', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'hdl', label: 'HDL-C', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'uacr', label: 'UAcr', unit: '', target: 30, targetLabel: '< 30', dir: 'lt' },
+  { key: 'micro_albumin', label: 'Micro-Albumin', unit: 'mg/L', target: null, targetLabel: '—', dir: null },
+  { key: 'creatinine', label: 'Creatinine', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'egfr', label: 'eGFR', unit: '', target: null, targetLabel: '—', dir: null },
+  { key: 'bun', label: 'BUN', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'uric_acid', label: 'Uric Acid', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 's_gpt', label: 'S-GPT', unit: 'U/L', target: null, targetLabel: '—', dir: null },
+  { key: 'u_sg', label: 'U-Specific Gravity', unit: '', target: null, targetLabel: '1.005-1.030', dir: null },
 ]
 
-// Qualitative urine baseline (not numeric).
-export const URINE_QUALITATIVE = [
-  { key: 'u_sugar', label: 'U-Sugar', baseline: '++++' },
-  { key: 'u_ketones', label: 'U-Ketones', baseline: '+++' },
+// Qualitative urine definitions (baseline entered by the user, not numeric).
+const URINE_DEFS = [
+  { key: 'u_sugar', label: 'U-Sugar' },
+  { key: 'u_ketones', label: 'U-Ketones' },
 ]
 
-export const BASELINE_DATE = '2026-09-05'
+const withBaseline = (def) =>
+  Object.defineProperty({ ...def }, 'baseline', {
+    enumerable: true,
+    get: () => live.labBaseline.values[def.key] ?? null,
+  })
+
+export const LAB_FIELDS = LAB_FIELD_DEFS.map(withBaseline)
+export const URINE_QUALITATIVE = URINE_DEFS.map(withBaseline)
+
+/** Baseline lab date (YYYY-MM-DD), '' until the user enters a baseline. Reactive when read in a render/computed. */
+export function getBaselineDate() {
+  return live.labBaseline.date || ''
+}
 
 // =====================================================================
 // User customization (glucosync.customConfig)
@@ -167,7 +181,7 @@ export const BASELINE_DATE = '2026-09-05'
 // that all components read from.
 // =====================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o))
-const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'drinkPresets', 'medications', 'targets']
+const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'drinkPresets', 'medications', 'targets', 'labBaseline']
 const TIMINGS = ['morning', 'evening', 'both']
 
 export const customConfig = reactive({})
@@ -178,6 +192,7 @@ export const live = reactive({
   drinkPresets: clone(DRINK_PRESETS),
   medications: clone(MEDICATIONS),
   targets: { ...TARGETS },
+  labBaseline: { date: '', values: {} },
 })
 
 let changeListener = null
@@ -206,6 +221,7 @@ function recompute() {
   live.medications = clone(customConfig.medications ?? MEDICATIONS)
   const merged = { ...TARGETS, ...(customConfig.targets ?? {}) }
   live.targets = { ...merged, ...hydrationRangeFromWeight(merged.userWeight) }
+  live.labBaseline = clone(customConfig.labBaseline ?? { date: '', values: {} })
 }
 
 /** Validate untrusted config (from storage / import); returns only valid sections. */
@@ -258,6 +274,21 @@ export function sanitizeCustomConfig(cfg) {
     }
     if (Object.keys(t).length) out.targets = t
   }
+  if (cfg.labBaseline && typeof cfg.labBaseline === 'object') {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(cfg.labBaseline.date) ? cfg.labBaseline.date : ''
+    const values = {}
+    const src = cfg.labBaseline.values && typeof cfg.labBaseline.values === 'object' ? cfg.labBaseline.values : {}
+    for (const f of LAB_FIELD_DEFS) {
+      const v = src[f.key]
+      if (v === '' || v == null || typeof v === 'boolean') continue
+      const n = Number(v)
+      if (Number.isFinite(n) && n >= 0 && n < 100000) values[f.key] = n
+    }
+    for (const q of URINE_DEFS) {
+      if (typeof src[q.key] === 'string' && /^(-|±|\+{1,4})$/.test(src[q.key])) values[q.key] = src[q.key]
+    }
+    out.labBaseline = { date, values }
+  }
   return out
 }
 
@@ -273,7 +304,7 @@ export function getCustomConfig() {
   return clone(customConfig)
 }
 
-/** Override one section ('presets' | 'tags' | 'exerciseTypes' | 'drinkPresets' | 'medications' | 'targets'). */
+/** Override one section ('presets' | 'tags' | 'exerciseTypes' | 'drinkPresets' | 'medications' | 'targets' | 'labBaseline'). */
 export function updateCustom(section, value) {
   if (!SECTIONS.includes(section)) return
   const clean = sanitizeCustomConfig({ [section]: value })[section]

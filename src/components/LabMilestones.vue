@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, BASELINE_DATE, hydrationRangeFromWeight, live } from '../data/presets.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, getBaselineDate, hydrationRangeFromWeight, live, updateCustom, resetCustom } from '../data/presets.js'
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
 import { sanitizeQualitative } from '../data/labContext.js'
@@ -31,7 +31,7 @@ const STATUS_STYLE = {
 const STATUS_TEXT = { met: '達標', unmet: '未達標', none: '—' }
 
 function delta(field, value) {
-  if (value == null || value === '') return ''
+  if (value == null || value === '' || field.baseline == null) return ''
   const d = Number(value) - field.baseline
   const sign = d > 0 ? '+' : ''
   return `${sign}${Math.round(d * 100) / 100}`
@@ -76,6 +76,49 @@ function submit() {
   emit('add-lab', lab)
   for (const f of LAB_FIELDS) form[f.key] = ''
   form.u_sugar = form.u_ketones = form.note = ''
+}
+
+// ---------- baseline (personal values live in the custom config, never in the code) ----------
+const baselineForm = reactive({ date: '', values: {} })
+const baselineMsg = ref('')
+function loadBaselineForm() {
+  baselineForm.date = live.labBaseline.date || ''
+  baselineForm.values = {}
+  for (const f of [...LAB_FIELDS, ...URINE_QUALITATIVE]) baselineForm.values[f.key] = live.labBaseline.values[f.key] ?? ''
+  baselineMsg.value = ''
+}
+loadBaselineForm()
+
+function saveBaseline() {
+  baselineMsg.value = ''
+  if (!baselineForm.date) {
+    baselineMsg.value = '請選擇基準檢驗日期。'
+    return
+  }
+  const values = {}
+  for (const f of LAB_FIELDS) {
+    const raw = baselineForm.values[f.key]
+    if (raw !== '' && raw != null && !Number.isNaN(Number(raw))) values[f.key] = Number(raw)
+  }
+  for (const u of URINE_QUALITATIVE) {
+    const raw = String(baselineForm.values[u.key] ?? '').trim()
+    if (!raw) continue
+    const v = sanitizeQualitative(raw)
+    if (v == null) {
+      baselineMsg.value = '尿糖 / 尿酮請填 -、±、+、++、+++、++++（或 陰性、微量）。'
+      return
+    }
+    values[u.key] = v
+  }
+  updateCustom('labBaseline', { date: baselineForm.date, values })
+  loadBaselineForm()
+  baselineMsg.value = '基準檢驗已儲存。'
+}
+
+function clearBaseline() {
+  resetCustom('labBaseline')
+  loadBaselineForm()
+  baselineMsg.value = '已清除基準檢驗。'
 }
 
 // ---------- AI evaluation ----------
@@ -152,7 +195,7 @@ async function runEvaluation() {
         </button>
       </div>
       <p class="text-xs text-slate-500">
-        基準日 {{ BASELINE_DATE }}（115/09/05）· 追蹤目標：11-12 個月後
+        基準日 {{ getBaselineDate() || '尚未設定' }} · 追蹤目標：11-12 個月後
         <span v-if="latest"> · 最新追蹤 {{ latest.date }}</span>
       </p>
 
@@ -170,7 +213,7 @@ async function runEvaluation() {
           <tbody class="divide-y divide-slate-100">
             <tr v-for="f in LAB_FIELDS" :key="f.key">
               <td class="py-2 pr-2 text-slate-700">{{ f.label }}</td>
-              <td class="py-2 pr-2 text-right text-slate-600">{{ f.baseline }} <span class="text-xs text-slate-400">{{ f.unit }}</span></td>
+              <td class="py-2 pr-2 text-right text-slate-600">{{ f.baseline ?? '—' }} <span class="text-xs text-slate-400">{{ f.unit }}</span></td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ f.targetLabel }}</td>
               <td class="py-2 pr-2 text-right font-medium text-slate-800">
                 <template v-if="latest && latest[f.key] != null">
@@ -187,7 +230,7 @@ async function runEvaluation() {
             </tr>
             <tr v-for="u in URINE_QUALITATIVE" :key="u.key">
               <td class="py-2 pr-2 text-slate-700">{{ u.label }}</td>
-              <td class="py-2 pr-2 text-right text-slate-600">{{ u.baseline }}</td>
+              <td class="py-2 pr-2 text-right text-slate-600">{{ u.baseline ?? '—' }}</td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ u.key === 'u_ketones' ? '陰性' : '改善' }}</td>
               <td class="py-2 pr-2 text-right font-medium text-slate-800">{{ latest?.[u.key] || '—' }}</td>
               <td />
@@ -195,6 +238,33 @@ async function runEvaluation() {
           </tbody>
         </table>
       </div>
+    </section>
+
+    <!-- Baseline entry -->
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <details :open="!getBaselineDate()">
+        <summary class="cursor-pointer text-sm font-semibold text-slate-800">📌 基準檢驗值（{{ getBaselineDate() || '尚未設定' }}）</summary>
+        <p class="mt-1 text-xs text-slate-500">個人健康資料只存在你的瀏覽器與私人 Firestore，不會放進程式碼或公開網頁。</p>
+        <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <label class="col-span-2 text-xs text-slate-500 sm:col-span-3">
+            基準檢驗日期
+            <input v-model="baselineForm.date" type="date" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          </label>
+          <label v-for="f in LAB_FIELDS" :key="f.key" class="text-xs text-slate-500">
+            {{ f.label }} {{ f.unit }}
+            <input v-model="baselineForm.values[f.key]" type="number" step="any" inputmode="decimal" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          </label>
+          <label v-for="u in URINE_QUALITATIVE" :key="u.key" class="text-xs text-slate-500">
+            {{ u.label }}
+            <input v-model="baselineForm.values[u.key]" placeholder="例如 +" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          </label>
+        </div>
+        <p v-if="baselineMsg" class="mt-2 text-sm text-slate-600">{{ baselineMsg }}</p>
+        <div class="mt-3 flex gap-2">
+          <button type="button" class="flex-1 rounded-xl bg-teal-700 py-3 font-semibold text-white active:bg-teal-800" @click="saveBaseline">儲存基準值</button>
+          <button type="button" class="rounded-xl bg-slate-100 px-4 py-3 text-sm text-slate-700" @click="clearBaseline">清除</button>
+        </div>
+      </details>
     </section>
 
     <!-- Lab trend charts -->

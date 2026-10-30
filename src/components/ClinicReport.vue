@@ -4,7 +4,7 @@
 // - "列印 / 存成 PDF" uses window.print(); print CSS (style.css) hides the app and prints only this view.
 // - "下載 PNG" draws the same report model onto a <canvas> with fillText (no external services / libraries).
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { BASELINE_DATE } from '../data/presets.js'
+import { getBaselineDate } from '../data/presets.js'
 import { REPORT_RANGES, buildReport } from '../data/report.js'
 
 const props = defineProps({
@@ -62,12 +62,12 @@ function pngRows(r) {
   for (const c of r.compliance) rows.push({ kind: 'cols', cells: [c.label, c.hint, pctText(c)] })
   rows.push({ kind: 'h', text: '每日平均（只計有紀錄的天數）' })
   for (const a of r.averages) rows.push({ kind: 'cols', cells: [a.label, a.value == null ? '—' : fmt(a.value, a.unit), `${a.days} 天`] })
-  rows.push({ kind: 'h', text: `檢驗：基準（${BASELINE_DATE}）vs 最新` })
+  rows.push({ kind: 'h', text: `檢驗：基準（${getBaselineDate() || '未設定'}）vs 最新` })
   rows.push({ kind: 'cols', head: true, cells: ['項目', '基準', '最新（日期）', '目標 / 狀態'] })
   for (const l of r.labRows) {
     rows.push({
       kind: 'cols',
-      cells: [l.label + (l.unit ? ` (${l.unit})` : ''), String(l.baseline), l.latest == null ? '尚無追蹤' : `${l.latest}（${l.latestDate}）${l.delta != null ? ` ${deltaText(l.delta)}` : ''}`, l.target === '—' && l.status === '—' ? '—' : `${l.target} · ${l.status}`],
+      cells: [l.label + (l.unit ? ` (${l.unit})` : ''), l.baseline == null ? '—' : String(l.baseline), l.latest == null ? '尚無追蹤' : `${l.latest}（${l.latestDate}）${l.delta != null ? ` ${deltaText(l.delta)}` : ''}`, l.target === '—' && l.status === '—' ? '—' : `${l.target} · ${l.status}`],
     })
   }
   rows.push({ kind: 'h', text: '身體不適紀錄' })
@@ -242,11 +242,11 @@ defineExpose({ pngRows: () => pngRows(report.value) })
         <section class="report-block mt-4">
           <h2 class="report-h">🧪 檢驗：基準 vs 最新</h2>
           <table class="report-table" data-testid="report-labs">
-            <thead><tr><th>項目</th><th>基準（{{ BASELINE_DATE }}）</th><th>最新（日期）</th><th>變化</th><th>目標</th><th>狀態</th></tr></thead>
+            <thead><tr><th>項目</th><th>基準（{{ getBaselineDate() || '未設定' }}）</th><th>最新（日期）</th><th>變化</th><th>目標</th><th>狀態</th></tr></thead>
             <tbody>
               <tr v-for="l in report.labRows" :key="l.key" :data-key="l.key">
                 <td>{{ l.label }}<span v-if="l.unit" class="text-xs text-slate-400">{{ ' ' + l.unit }}</span></td>
-                <td class="tabular-nums">{{ l.baseline }}</td>
+                <td class="tabular-nums">{{ l.baseline ?? '—' }}</td>
                 <td class="tabular-nums">
                   <template v-if="l.latest != null">{{ l.latest }} <span class="text-xs text-slate-500">（{{ l.latestDate }}）</span></template>
                   <span v-else class="text-slate-400">尚無追蹤</span>
