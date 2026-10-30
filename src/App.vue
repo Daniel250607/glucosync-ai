@@ -50,6 +50,7 @@ import {
   getCustomConfig,
   hydrationRangeFromWeight,
   live,
+  medIdFromName,
   onCustomConfigChange,
   resetCustom,
   updateCustom,
@@ -442,6 +443,18 @@ function loadDraft() {
 function addDraftMed() {
   draft.medications.push({ id: `med-${Date.now()}`, name: '', dosage: '', timing: 'morning' })
 }
+/** New meds get an id derived from the name (keeps day.meds history valid when a list is re-entered). */
+function finalizeMedIds(meds) {
+  const used = new Set(meds.filter((m) => !/^med-\d+$/.test(m.id)).map((m) => m.id))
+  return meds.map((m) => {
+    if (!/^med-\d+$/.test(m.id)) return m
+    const base = medIdFromName(m.name)
+    if (!base || used.has(base)) return m
+    used.add(base)
+    return { ...m, id: base }
+  })
+}
+
 function removeDraftMed(i) {
   draft.medications.splice(i, 1)
 }
@@ -515,8 +528,9 @@ function submitSettings() {
   // Only write an override when something actually differs from the current effective config.
   const nums = Object.fromEntries(Object.entries(draft.targets).map(([k, v]) => [k, Number(v)]))
   if (JSON.stringify(nums) !== JSON.stringify(live.targets)) updateCustom('targets', nums)
-  if (JSON.stringify(draft.medications) !== JSON.stringify(live.medications)) {
-    updateCustom('medications', draft.medications)
+  const meds = finalizeMedIds(draft.medications)
+  if (JSON.stringify(meds) !== JSON.stringify(live.medications)) {
+    updateCustom('medications', meds)
   }
   closeSettings()
   // Firebase is initialised at load time, so reload when its config changed.
@@ -1305,7 +1319,7 @@ const qrCountdownLabel = computed(() => {
             <div class="flex gap-2">
               <input
                 v-model="m.name"
-                placeholder="藥名 (例如 [REDACTED] ([REDACTED]))"
+                placeholder="藥名"
                 class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white p-2 text-base"
               />
               <button

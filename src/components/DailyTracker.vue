@@ -930,9 +930,9 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       >
         <p class="font-semibold">⚠️ 身體不適日（Sick day）注意事項 · 一般衛教資訊</p>
         <ul class="mt-1 ml-5 list-disc space-y-0.5">
-          <li>服用 SGLT-2 抑制劑（[REDACTED]）期間，嘔吐、腹瀉、發燒、吃不下或大量飲酒會增加脫水及「血糖正常的酮酸中毒（euDKA）」風險，即使血糖不高也可能發生。</li>
+          <li>服用 SGLT-2 抑制劑期間，嘔吐、腹瀉、發燒、吃不下或大量飲酒會增加脫水及「血糖正常的酮酸中毒（euDKA）」風險，即使血糖不高也可能發生。</li>
           <li>一般建議少量多次補充水分；若吃得下，維持少量容易消化的含醣食物，避免空腹或禁食。</li>
-          <li><b>請聯絡您的醫師，詢問是否需要暫停 [REDACTED]</b>（以及其他藥物）、何時恢復；本 App 不提供停藥或調整劑量的指示。</li>
+          <li><b>請聯絡您的醫師，詢問是否需要暫停 SGLT-2 抑制劑</b>（以及其他藥物）、何時恢復；本 App 不提供停藥或調整劑量的指示。</li>
           <li><b>若出現噁心／嘔吐、腹痛、呼吸困難或呼吸急促、嗜睡或意識不清，請立即就醫（急診）。</b></li>
         </ul>
         <p class="mt-1 text-xs opacity-80">此紀錄會同步到雲端，並提供給 AI 分析與回診報告參考。</p>

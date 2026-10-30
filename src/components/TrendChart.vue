@@ -55,7 +55,7 @@ const series = computed(() => {
 const COLORS = {
   carbsOk: 'rgba(251,146,60,0.85)', // orange: inside carbsMin–carbsMax
   carbsHigh: 'rgba(244,63,94,0.8)', // red: > carbsMax
-  carbsLow: 'rgba(234,179,8,0.9)', // yellow: < carbsMin (ketoacidosis risk on [REDACTED])
+  carbsLow: 'rgba(234,179,8,0.9)', // yellow: < carbsMin (ketoacidosis risk on an SGLT-2 inhibitor)
   exMet: '#0d9488', // dark teal: goal met
   exUnmet: 'rgba(13,148,136,0.4)', // light teal: goal not met
 }
@@ -605,7 +605,7 @@ onBeforeUnmount(() => {
       <p>
         🍚 碳水長條：<span class="legend-dot" :style="{ background: COLORS.carbsOk }"></span>橘＝範圍內 {{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} g、
         <span class="legend-dot" :style="{ background: COLORS.carbsHigh }"></span>紅＝超標（&gt; {{ live.targets.carbsMax }} g）、
-        <span class="legend-dot" :style="{ background: COLORS.carbsLow }"></span>黃＝過低（&lt; {{ live.targets.carbsMin }} g，[REDACTED] 酮酸風險）；無長條／斷線＝當天未記錄（不算 0，也不計入達成率）。
+        <span class="legend-dot" :style="{ background: COLORS.carbsLow }"></span>黃＝過低（&lt; {{ live.targets.carbsMin }} g，SGLT-2 酮酸風險）；無長條／斷線＝當天未記錄（不算 0，也不計入達成率）。
       </p>
       <p>🟣 飽和脂肪紫線（右軸）：淡紫虛線＝建議 ≤ {{ live.targets.satFatMin }} g、紅虛線＝上限 {{ live.targets.satFatMax }} g。</p>
       <p>💧 飲水：藍色面積＝當日飲水量；淺藍帶＝安全區 {{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} cc（依體重 {{ live.targets.userWeight }} kg，下限不低於 2000 cc）。</p>

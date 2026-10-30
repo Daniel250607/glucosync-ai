@@ -14,7 +14,7 @@ export const TARGETS = {
   satFatMin: 15,
   satFatMax: 20,
   // Carb safety bounds (g/day): lower bound avoids ketogenic-like intake while on
-  // an SGLT-2 inhibitor ([REDACTED]); upper bound limits post-meal glucose load.
+  // an SGLT-2 inhibitor; upper bound limits post-meal glucose load.
   carbsMin: 100,
   carbsMax: 180,
 }
@@ -124,14 +124,16 @@ export const DRINK_PRESETS = [
   { id: 'drk-almond-milk', name: '無糖杏仁飲', default_cc: 300, counts_as_water: false },
 ]
 
-// timing: 'morning' | 'evening' | 'both'. `id` is the key used in day.meds[slot][id]
-// (kept identical to the original keys so existing logged data stays valid).
-export const MEDICATIONS = [
-  { id: 'eutomin', name: '[REDACTED] ([REDACTED])', dosage: '850mg', timing: 'both' },
-  { id: 'forxiga', name: '[REDACTED] ([REDACTED])', dosage: '10mg', timing: 'morning' },
-  { id: 'glitos', name: '[REDACTED] ([REDACTED])', dosage: '15mg', timing: 'morning' },
-  { id: 'roty', name: '[REDACTED] ([REDACTED])', dosage: '20mg', timing: 'morning' },
-]
+// Medications are PERSONAL health data: the default list is empty and the user enters their own in
+// Settings (stored in the custom config). timing: 'morning' | 'evening' | 'both'. `id` is the key used
+// in day.meds[slot][id]; see medIdFromName for how ids are derived so logged data stays valid.
+export const MEDICATIONS = []
+
+/** Stable id from a drug name: its first latin word, lowercased ("[REDACTED] ([REDACTED])" -> "eutomin"). '' if none. */
+export function medIdFromName(name) {
+  const first = String(name || '').trim().split(/[\s(（]/)[0]
+  return first.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
 
 // Lab field definitions and follow-up targets. Baseline values are PERSONAL health data: they are
 // never shipped in the code but entered by the user (section `labBaseline` of the custom config),

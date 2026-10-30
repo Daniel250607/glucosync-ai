@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { applyCustomConfig, getBaselineDate, LAB_FIELDS } from '../presets.js'
+import { applyCustomConfig, getBaselineDate, LAB_FIELDS, MEDICATIONS, medIdFromName } from '../presets.js'
 import { labContextBlock, latestLabSnapshot } from '../labContext.js'
 
 afterEach(() => applyCustomConfig({}))
@@ -31,5 +31,16 @@ describe('lab baseline lives in custom config', () => {
   it('rejects a malformed baseline date', () => {
     applyCustomConfig({ labBaseline: { date: '2026/01/01', values: { hba1c: 9 } } })
     expect(getBaselineDate()).toBe('')
+  })
+})
+
+describe('medications', () => {
+  it('ships no default medications', () => {
+    expect(MEDICATIONS).toEqual([])
+  })
+  it('derives ids from the first latin word of the name', () => {
+    expect(medIdFromName('Name1 (Generic)')).toBe('name1')
+    expect(medIdFromName('  Abc-D 10mg')).toBe('abcd')
+    expect(medIdFromName('中文藥名')).toBe('')
   })
 })
