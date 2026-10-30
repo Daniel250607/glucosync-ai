@@ -315,6 +315,7 @@ const settings = reactive({
   firebaseConfig: '',
   geminiModel: DEFAULT_GEMINI_MODEL,
   thinkingBudget: DEFAULT_THINKING_BUDGET,
+  healthContext: '',
 })
 const settingsError = ref('')
 const pendingPairBanner = ref(false)
@@ -458,6 +459,7 @@ function openSettings(initialTab) {
   settings.geminiApiKey = s.geminiApiKey || ''
   settings.firebaseConfig = s.firebaseConfig || ''
   settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
+  settings.healthContext = s.healthContext || ''
   settings.thinkingBudget = normalizeThinkingBudget(
     s.thinkingBudget != null && s.thinkingBudget !== '' ? s.thinkingBudget : DEFAULT_THINKING_BUDGET,
   )
@@ -508,6 +510,7 @@ function submitSettings() {
     firebaseConfig: text,
     geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
     thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
+    healthContext: settings.healthContext.trim(),
   })
   // Only write an override when something actually differs from the current effective config.
   const nums = Object.fromEntries(Object.entries(draft.targets).map(([k, v]) => [k, Number(v)]))
@@ -1185,6 +1188,15 @@ const qrCountdownLabel = computed(() => {
               </button>
             </div>
             <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint }}</p>
+
+            <p class="mt-4 text-sm font-medium text-slate-700">🩺 健康背景（基準檢驗、藥物、目標）</p>
+            <p class="text-xs text-slate-400">僅存於此瀏覽器，AI 請求時才附上；範本見 docs/health_context.example.md。</p>
+            <textarea
+              v-model="settings.healthContext"
+              rows="6"
+              class="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs"
+              placeholder="# Health Context (Baseline)&#10;## Medications&#10;..."
+            ></textarea>
 
             <p class="mt-4 border-t border-slate-100 pt-2 text-[11px] leading-snug text-slate-400">
               🔒 金鑰僅存於此瀏覽器的 localStorage，不會寫入程式碼或公開網頁。（.env 的 VITE_GEMINI_API_KEY 僅在本機 npm run dev 生效，正式版不會打包。）

@@ -1,6 +1,5 @@
 // Gemini client using Structured Outputs (JSON Schema).
 // The API key and model ID are never hardcoded: they are read from user settings / env.
-import healthContext from '../../docs/health_context.md?raw'
 import { BASELINE_DATE, hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
 import { followUpLabRecords, labContextBlock } from '../data/labContext.js'
 import { sickPromptContext } from '../data/sickDay.js'
@@ -44,8 +43,8 @@ function hydrationBand(weightKg = live.targets?.userWeight) {
 
 const SYSTEM_INSTRUCTION_TEMPLATE = `You are GlucoSync, a clinical-nutrition assistant for ONE patient with type 2 diabetes, dyslipidemia and early albuminuria (current control level: see LAB DATA). Respond in Traditional Chinese (繁體中文, Taiwan usage) inside all string fields. Be concise and practical (Taiwan convenience stores, bento shops, home cooking).
 
-=== PATIENT BACKGROUND (static file docs/health_context.md, baseline snapshot) ===
-${healthContext}
+=== PATIENT BACKGROUND (user-provided baseline snapshot from app settings) ===
+{{BACKGROUND}}
 
 {{LABS}}
 The LAB DATA block above is the authoritative source for every lab value. Any lab number or fixed daily target in the background file is the historical baseline only; when they differ, use LAB DATA (latest values) and the user-configured targets in the request.
@@ -81,7 +80,8 @@ Each alert has "level" in {green, yellow, red} and a short "message" (<= 40 Chin
 function systemInstruction(labs = []) {
   const b = hydrationBand()
   const hydration = `weight-based ${b.hydrationMin}-${b.hydrationMax} cc/day for ${b.userWeight} kg; never below 2000 cc on an SGLT-2 inhibitor. This weight-based range supersedes any fixed hydration figure in the background file`
-  return SYSTEM_INSTRUCTION_TEMPLATE.replace('{{LABS}}', () => labContextBlock(labs)).replace('{{HYDRATION}}', () => hydration)
+  return SYSTEM_INSTRUCTION_TEMPLATE.replace('{{BACKGROUND}}', () => (loadSettings().healthContext || '').trim() || '(not provided; rely on LAB DATA)')
+    .replace('{{LABS}}', () => labContextBlock(labs)).replace('{{HYDRATION}}', () => hydration)
 }
 
 // ---------- Schemas ----------

@@ -3,3 +3,6 @@ dist
 .env
 .env.*
 !.env.example
+
+# personal health data must never be committed
+docs/health_context.md
