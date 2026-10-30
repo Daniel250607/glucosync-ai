@@ -55,6 +55,7 @@ import {
   resetCustom,
   updateCustom,
 } from './data/presets.js'
+import { parseMedications } from './data/healthContextImport.js'
 import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_THINKING_BUDGET,
@@ -438,6 +439,39 @@ watch(
 function loadDraft() {
   draft.targets = { ...live.targets }
   draft.medications = JSON.parse(JSON.stringify(live.medications))
+}
+
+const importMsg = ref('')
+
+/** Read a user-chosen local file as text (never uploaded). */
+async function readPickedFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  return file ? file.text() : ''
+}
+
+async function importHealthContextFile(event) {
+  const text = await readPickedFile(event)
+  if (!text.trim()) return
+  settings.healthContext = text.trim()
+  importMsg.value = '已載入健康背景，請按下方「儲存」。'
+}
+
+async function importMedsFile(event) {
+  const text = await readPickedFile(event)
+  const meds = parseMedications(text)
+  if (!meds.length) {
+    importMsg.value = '檔案裡找不到「## Medications」區段的藥物。'
+    return
+  }
+  const have = new Set(draft.medications.map((m) => m.name.trim().toLowerCase()))
+  let added = 0
+  for (const m of meds) {
+    if (have.has(m.name.toLowerCase())) continue
+    draft.medications.push({ id: `med-${Date.now()}-${added}`, ...m })
+    added++
+  }
+  importMsg.value = `已加入 ${added} 筆藥物（重複的已略過），請檢查早晚設定後按「儲存」。`
 }
 
 function addDraftMed() {
@@ -1205,6 +1239,11 @@ const qrCountdownLabel = computed(() => {
 
             <p class="mt-4 text-sm font-medium text-slate-700">🩺 健康背景（基準檢驗、藥物、目標）</p>
             <p class="text-xs text-slate-400">僅存於此瀏覽器，AI 請求時才附上；範本見 docs/health_context.example.md。</p>
+            <label class="mt-2 inline-block cursor-pointer rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700 active:bg-slate-200">
+              📂 從檔案匯入（health_context.md）
+              <input type="file" accept=".md,.txt,text/plain,text/markdown" class="hidden" @change="importHealthContextFile" />
+            </label>
+            <p v-if="importMsg" class="mt-1 text-xs text-teal-700">{{ importMsg }}</p>
             <textarea
               v-model="settings.healthContext"
               rows="6"
@@ -1344,6 +1383,10 @@ const qrCountdownLabel = computed(() => {
             </div>
           </div>
         </div>
+        <label class="mt-2 block w-full cursor-pointer rounded-lg bg-slate-100 py-2.5 text-center text-sm text-slate-700 active:bg-slate-200">
+          📂 從檔案匯入藥物（health_context.md）
+          <input type="file" accept=".md,.txt,text/plain,text/markdown" class="hidden" @change="importMedsFile" />
+        </label>
         <button class="mt-2 w-full rounded-lg bg-slate-100 py-2.5 text-sm text-slate-700 active:bg-slate-200" @click="addDraftMed">
           ＋ 新增藥物
         </button>
