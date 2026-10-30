@@ -25,7 +25,8 @@ describe('lab baseline lives in custom config', () => {
     expect(getBaselineDate()).toBe('2026-01-01')
     const rows = latestLabSnapshot([])
     expect(rows.map((r) => r.key)).toEqual(['hba1c', 'u_ketones'])
-    expect(rows[0]).toMatchObject({ baseline: null, latest: 9, source: 'baseline' })
+    expect(rows[0]).toMatchObject({ latest: 9, source: 'baseline' })
+    expect(rows[0].baseline).toBe(9)
   })
 
   it('rejects a malformed baseline date', () => {

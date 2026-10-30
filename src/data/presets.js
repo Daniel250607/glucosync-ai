@@ -129,7 +129,7 @@ export const DRINK_PRESETS = [
 // in day.meds[slot][id]; see medIdFromName for how ids are derived so logged data stays valid.
 export const MEDICATIONS = []
 
-/** Stable id from a drug name: its first latin word, lowercased ("[REDACTED] ([REDACTED])" -> "eutomin"). '' if none. */
+/** Stable id from a drug name: its first latin word, lowercased ("Name1 (Generic)" -> "name1"). '' if none. */
 export function medIdFromName(name) {
   const first = String(name || '').trim().split(/[\s(（]/)[0]
   return first.toLowerCase().replace(/[^a-z0-9]/g, '')
