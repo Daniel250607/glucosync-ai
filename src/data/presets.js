@@ -114,7 +114,16 @@ export const EXERCISE_TYPES = [
   '健身房跑步機',
   '重訓/肌力',
   '騎車',
+  '深蹲',
 ]
+
+// Walking-equivalent factor per exercise type (1 = same effect per minute as walking / marching).
+// Provisional defaults: the user adjusts them in the exercise type editor. Minutes counted toward the
+// daily target = actual minutes x factor.
+export const EXERCISE_FACTORS = {
+  '抬腳跟': 0.7,
+  '深蹲': 1.5,
+}
 
 export const DRINK_PRESETS = [
   { id: 'drk-green-tea', name: '無糖綠茶/烏龍茶', default_cc: 500, counts_as_water: true },
@@ -183,7 +192,7 @@ export function getBaselineDate() {
 // that all components read from.
 // =====================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o))
-const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'drinkPresets', 'medications', 'targets', 'labBaseline']
+const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'exerciseFactors', 'drinkPresets', 'medications', 'targets', 'labBaseline']
 const TIMINGS = ['morning', 'evening', 'both']
 
 export const customConfig = reactive({})
@@ -191,6 +200,7 @@ export const live = reactive({
   presets: clone(PRESETS),
   tags: clone(TAGS),
   exerciseTypes: clone(EXERCISE_TYPES),
+  exerciseFactors: { ...EXERCISE_FACTORS },
   drinkPresets: clone(DRINK_PRESETS),
   medications: clone(MEDICATIONS),
   targets: { ...TARGETS },
@@ -219,6 +229,7 @@ function recompute() {
   live.presets = clone(customConfig.presets ?? PRESETS)
   live.tags = clone(customConfig.tags ?? TAGS)
   live.exerciseTypes = clone(customConfig.exerciseTypes ?? EXERCISE_TYPES)
+  live.exerciseFactors = { ...EXERCISE_FACTORS, ...(customConfig.exerciseFactors ?? {}) }
   live.drinkPresets = clone(customConfig.drinkPresets ?? DRINK_PRESETS)
   live.medications = clone(customConfig.medications ?? MEDICATIONS)
   const merged = { ...TARGETS, ...(customConfig.targets ?? {}) }
@@ -247,6 +258,17 @@ export function sanitizeCustomConfig(cfg) {
     out.exerciseTypes = [
       ...new Set(cfg.exerciseTypes.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())),
     ]
+  }
+  if (cfg.exerciseFactors && typeof cfg.exerciseFactors === 'object' && !Array.isArray(cfg.exerciseFactors)) {
+    const f = {}
+    for (const [k, v] of Object.entries(cfg.exerciseFactors)) {
+      const key = String(k).trim()
+      const n = Number(v)
+      if (key && key.length <= 40 && key !== '__proto__' && v !== '' && v != null && Number.isFinite(n) && n >= 0.1 && n <= 5) {
+        f[key] = Math.round(n * 100) / 100
+      }
+    }
+    out.exerciseFactors = f
   }
   if (Array.isArray(cfg.drinkPresets)) {
     out.drinkPresets = cfg.drinkPresets
@@ -321,6 +343,17 @@ export function resetCustom(sections = SECTIONS) {
   for (const s of [].concat(sections)) delete customConfig[s]
   recompute()
   if (changeListener) changeListener()
+}
+
+/** Walking-equivalent factor for an exercise type (1 when not configured). */
+export function exerciseFactor(type) {
+  const n = Number(live.exerciseFactors[String(type || '').trim()])
+  return Number.isFinite(n) && n > 0 ? n : 1
+}
+
+/** Minutes counted toward the daily target: actual minutes x factor, at least 1. */
+export function equivalentMinutes(actualMin, factor = 1) {
+  return Math.max(1, Math.round((Number(actualMin) || 0) * (Number(factor) || 1)))
 }
 
 /** Medications that should be taken in a slot ('morning' | 'evening'). */

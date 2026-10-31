@@ -1,8 +1,9 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
-import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, summarizeDay, summarizeDayAI } from '../services/gemini.js'
+import { equivalentMinutes, exerciseFactor, live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
+import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, suggestExerciseFactor, summarizeDay, summarizeDayAI } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
+import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
 
 const props = defineProps({
@@ -338,7 +339,10 @@ const exerciseForm = reactive({
   reps: 50,
   sets: 3,
 })
-const repsDurationPreview = computed(() => estimateRepsMinutes(exerciseForm.reps))
+const currentFactor = computed(() => exerciseFactor(exerciseForm.type))
+/** Minutes shown for reps mode: actual (reps/20) x factor. */
+const repsDurationPreview = computed(() => equivalentMinutes(estimateRepsMinutes(exerciseForm.reps), currentFactor.value))
+const durationEquivalent = computed(() => equivalentMinutes(exerciseForm.duration, currentFactor.value))
 
 function selectExerciseType(type) {
   exerciseForm.type = type
@@ -385,7 +389,9 @@ function addExerciseLog(quickMin = null) {
       time: nowTime(),
       type,
       mode: 'reps',
-      duration_min: estimateRepsMinutes(reps),
+      duration_min: equivalentMinutes(estimateRepsMinutes(reps), exerciseFactor(type)),
+      actual_min: estimateRepsMinutes(reps),
+      factor: exerciseFactor(type),
       reps,
       sets,
       note: exerciseForm.note.trim(),
@@ -402,7 +408,9 @@ function addExerciseLog(quickMin = null) {
       time: nowTime(),
       type,
       mode: 'duration',
-      duration_min: dMin,
+      duration_min: equivalentMinutes(dMin, exerciseFactor(type)),
+      actual_min: dMin,
+      factor: exerciseFactor(type),
       note: exerciseForm.note.trim(),
       source: 'manual',
     }
@@ -427,7 +435,7 @@ function addExerciseLog(quickMin = null) {
     syncExerciseTotal(d)
   })
   exerciseForm.note = ''
-  const amount = entry.mode === 'reps' ? `${entry.reps} 下` : `${entry.duration_min} 分`
+  const amount = entry.mode === 'reps' ? `${entry.reps} 下` : `${entry.actual_min} 分`
   const entryId = entry.id
   offerUndo(`已記錄 ${entry.type} ${amount}`, () => {
     // Remove exactly that entry (by its unique id); no-op if it was already deleted.
@@ -472,9 +480,51 @@ function deleteExerciseTypePreset(t) {
   }
 }
 
+const factorSuggest = reactive({ type: '', busy: false, factor: null, reason: '', error: '' })
+
+async function askFactorSuggestion(t) {
+  const apiKey = getGeminiKey()
+  if (!apiKey) {
+    exerciseManageError.value = '尚未設定 Gemini API Key。'
+    emit('open-settings')
+    return
+  }
+  Object.assign(factorSuggest, { type: t, busy: true, factor: null, reason: '', error: '' })
+  try {
+    const recent = (props.day.exercise_logs || []).filter((e) => e && e.type === t)
+    const res = await suggestExerciseFactor({ apiKey, type: t, current: exerciseFactor(t), recent })
+    factorSuggest.factor = res.factor
+    factorSuggest.reason = res.reason
+  } catch (err) {
+    factorSuggest.error = err.message || String(err)
+  } finally {
+    factorSuggest.busy = false
+  }
+}
+
+function adoptFactorSuggestion() {
+  if (factorSuggest.factor == null) return
+  setExerciseFactor(factorSuggest.type, factorSuggest.factor)
+  dismissFactorSuggestion()
+}
+
+function dismissFactorSuggestion() {
+  Object.assign(factorSuggest, { type: '', busy: false, factor: null, reason: '', error: '' })
+}
+
+function setExerciseFactor(t, value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0.1 || n > 5) {
+    exerciseManageError.value = '換算係數請填 0.1 ～ 5（1 = 與散步相同）。'
+    return
+  }
+  exerciseManageError.value = ''
+  updateCustom('exerciseFactors', { ...live.exerciseFactors, [t]: n })
+}
+
 function resetExerciseTypePresets() {
-  if (!window.confirm('確定要恢復預設運動類型快選？')) return
-  resetCustom(['exerciseTypes'])
+  if (!window.confirm('確定要恢復預設運動類型快選與換算係數？')) return
+  resetCustom(['exerciseTypes', 'exerciseFactors'])
   exerciseForm.type = live.exerciseTypes[0] || '餐後踏步'
   exerciseManageError.value = ''
 }
@@ -483,6 +533,7 @@ const exerciseReached = computed(() => (props.day.exercise_min || 0) >= TARGETS.
 
 // ---------- meal input ----------
 const mealText = ref('')
+const mealTime = ref('') // HH:MM the meal was eaten; '' = now
 const selectedTags = ref([])
 const photos = ref([]) // [{ id, mimeType, data, preview }] compressed JPEGs, max MAX_MEAL_IMAGES
 const photoPending = ref(0) // photos still being decoded/compressed
@@ -690,6 +741,7 @@ function removePhoto(id) {
 
 function resetMealForm() {
   mealText.value = ''
+  mealTime.value = ''
   selectedTags.value = []
   photos.value = []
   photoPending.value = 0
@@ -706,10 +758,14 @@ async function submitMeal(withAI) {
     error.value = '請輸入餐點內容、選擇預設或上傳照片。'
     return
   }
+  if (mealTime.value && !isClockTime(mealTime.value)) {
+    error.value = '用餐時間格式不正確。'
+    return
+  }
   const id = `${Date.now()}`
   const entry = {
     id,
-    time: nowTime(),
+    time: mealTime.value || nowTime(),
     text: mealText.value.trim(),
     tags: [...selectedTags.value],
     analysis: null,
@@ -723,9 +779,10 @@ async function submitMeal(withAI) {
     }
     startBusy()
     try {
-      const { date, ...ctx } = summarizeDay(props.day)
+      const { date, ...ctx } = summarizeDay(props.day, { beforeTime: entry.time })
       entry.analysis = await analyzeMeal({
         apiKey,
+        mealTime: entry.time,
         text: entry.text,
         tags: entry.tags,
         images: photos.value.map((p) => ({ mimeType: p.mimeType, data: p.data })),
@@ -785,6 +842,8 @@ function removeMeal(id) {
   if (latestId.value === id) latestId.value = null
 }
 
+const mealsSorted = computed(() => sortMealsByTime(props.day.meals))
+
 const mealToShow = computed(() => {
   const meals = props.day.meals || []
   return (
@@ -814,7 +873,7 @@ async function runDaySummary() {
     const result = await summarizeDayAI({
       apiKey,
       totals: summarizeDay(props.day),
-      meals: props.day.meals.map((m) => ({
+      meals: sortMealsByTime(props.day.meals).map((m) => ({
         time: m.time,
         name: m.analysis?.meal_name || m.text,
         tags: m.tags,
@@ -1300,6 +1359,9 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               class="w-20 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
             />
             <span class="text-xs text-slate-500">分</span>
+            <span v-if="currentFactor !== 1" class="text-xs font-medium text-indigo-700">
+              × {{ currentFactor }} ≈ {{ durationEquivalent }} 分（折合散步）
+            </span>
             <button
               type="button"
               class="rounded-lg bg-teal-50 px-2.5 py-2 text-xs font-medium text-teal-800 ring-1 ring-teal-200 active:bg-teal-100"
@@ -1385,7 +1447,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
 
       <!-- Edit mode: manage exercise type presets -->
       <div v-else class="mt-3 space-y-3 rounded-xl border border-teal-200 bg-teal-50/40 p-3">
-        <p class="text-xs text-slate-500">管理常用的運動項目快選標籤，修改後自動儲存。</p>
+        <p class="text-xs text-slate-500">管理常用的運動項目快選標籤，修改後自動儲存。每個項目旁的數字是「換算係數」：1＝與散步每分鐘效果相同，&gt;1 表示強度較高、每分鐘折算更多分鐘。預設值為暫定，建議與醫師或教練確認後調整。</p>
         <div class="flex flex-wrap gap-2">
           <span
             v-for="t in live.exerciseTypes"
@@ -1393,6 +1455,25 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             class="inline-flex items-center gap-1 rounded-full bg-white py-1 pl-3 pr-1.5 text-xs text-slate-700 ring-1 ring-slate-200"
           >
             {{ t }}
+            <input
+              :value="live.exerciseFactors[t] ?? 1"
+              type="number"
+              step="0.1"
+              min="0.1"
+              max="5"
+              class="w-14 rounded border border-slate-200 px-1 py-0.5 text-center text-xs"
+              :aria-label="`${t} 換算係數`"
+              @change="setExerciseFactor(t, $event.target.value)"
+            />
+            <button
+              type="button"
+              class="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700 ring-1 ring-indigo-200 active:bg-indigo-100 disabled:opacity-50"
+              :disabled="factorSuggest.busy"
+              :aria-label="`AI 建議 ${t} 的換算係數`"
+              @click="askFactorSuggestion(t)"
+            >
+              AI
+            </button>
             <button
               type="button"
               class="grid size-6 place-items-center rounded-full text-rose-500 active:bg-rose-50"
@@ -1402,6 +1483,22 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             </button>
           </span>
           <span v-if="!live.exerciseTypes.length" class="text-xs text-slate-400">尚無運動快選</span>
+        </div>
+        <div v-if="factorSuggest.type" class="rounded-lg bg-indigo-50 p-2.5 text-xs text-indigo-900 ring-1 ring-indigo-200">
+          <p v-if="factorSuggest.busy">AI 評估「{{ factorSuggest.type }}」中…</p>
+          <p v-else-if="factorSuggest.error" class="text-rose-700">{{ factorSuggest.error }}</p>
+          <template v-else>
+            <p>
+              AI 建議「{{ factorSuggest.type }}」係數 <b>{{ factorSuggest.factor }}</b>（目前 {{ live.exerciseFactors[factorSuggest.type] ?? 1 }}）
+            </p>
+            <p v-if="factorSuggest.reason" class="mt-0.5 text-indigo-800">{{ factorSuggest.reason }}</p>
+            <p class="mt-0.5 text-[11px] text-indigo-700">僅為粗略參考，不是醫療建議；採用前建議與醫師或教練確認。</p>
+            <div class="mt-2 flex gap-2">
+              <button type="button" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-white active:bg-indigo-700" @click="adoptFactorSuggestion">採用</button>
+              <button type="button" class="rounded-lg bg-white px-3 py-1.5 text-slate-700 ring-1 ring-slate-300 active:bg-slate-50" @click="dismissFactorSuggestion">略過</button>
+            </div>
+          </template>
+          <button v-if="factorSuggest.busy || factorSuggest.error" type="button" class="mt-1 text-[11px] text-slate-500 underline" @click="dismissFactorSuggestion">關閉</button>
         </div>
         <div class="flex gap-2">
           <input
@@ -1444,7 +1541,10 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
                 v-if="isRepsLog(log)"
                 class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
               >{{ log.reps }} 下 ({{ log.sets || 1 }} 組 · 折合 {{ log.duration_min }} 分)</span>
-              <span v-else class="ml-1.5 font-semibold text-teal-600">{{ log.duration_min }} 分鐘</span>
+              <span v-else class="ml-1.5 font-semibold text-teal-600">
+                <template v-if="log.factor && log.factor !== 1">{{ log.actual_min }} 分 × {{ log.factor }} = {{ log.duration_min }} 分（折合散步）</template>
+                <template v-else>{{ log.duration_min }} 分鐘</template>
+              </span>
               <span
                 v-if="log.source === 'meal_tag'"
                 class="ml-1.5 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700"
@@ -1620,6 +1720,17 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         class="mt-3 w-full rounded-xl border border-slate-300 p-3 text-base focus:border-teal-500 focus:outline-none"
       />
 
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+        <label class="flex items-center gap-1.5">
+          用餐時間
+          <input v-model="mealTime" type="time" class="rounded-lg border border-slate-300 p-1.5 text-sm text-slate-800" />
+        </label>
+        <button v-if="mealTime" type="button" class="rounded-lg bg-slate-100 px-2.5 py-1.5 text-slate-700 active:bg-slate-200" @click="mealTime = ''">
+          改回現在
+        </button>
+        <span v-else>不填＝現在；補記請填實際用餐時間</span>
+      </div>
+
       <div class="mt-2 flex flex-wrap items-center gap-2">
         <button
           class="rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200 active:bg-amber-100"
@@ -1719,7 +1830,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       </div>
       <p v-if="!day.meals?.length" class="mt-3 text-sm text-slate-400">尚未記錄餐點。</p>
       <ul class="mt-2 divide-y divide-slate-100">
-        <li v-for="m in day.meals" :key="m.id" class="flex items-start gap-2 py-2">
+        <li v-for="m in mealsSorted" :key="m.id" class="flex items-start gap-2 py-2">
           <span class="mt-0.5 text-xs text-slate-400">{{ m.time }}</span>
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm text-slate-800">{{ m.analysis?.meal_name || m.text || '(照片)' }}</p>
