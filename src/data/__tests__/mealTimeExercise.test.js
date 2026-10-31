@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { eatenBefore, isClockTime, sortMealsByTime } from '../mealTime.js'
-import { applyCustomConfig, equivalentMinutes, exerciseFactor, live } from '../presets.js'
-import { clampExerciseFactor, summarizeDay } from '../../services/gemini.js'
+import { applyCustomConfig, equivalentMinutes, exerciseFactor, exerciseKcal, exerciseProfile, guessExerciseMode, live, repsToMinutes } from '../presets.js'
+import { clampExerciseFactor, normalizeExerciseProfile, summarizeDay } from '../../services/gemini.js'
 
 afterEach(() => applyCustomConfig({}))
 
@@ -69,5 +69,46 @@ describe('clampExerciseFactor', () => {
     expect(clampExerciseFactor(-3)).toBe(0.1)
     expect(clampExerciseFactor('x')).toBeNull()
     expect(clampExerciseFactor(undefined)).toBeNull()
+  })
+})
+
+describe('exercise profiles', () => {
+  it('guesses reps for counted moves and duration for timed ones', () => {
+    expect(guessExerciseMode('站立著抬後腳跟')).toBe('reps')
+    expect(guessExerciseMode('坐著，抬腿')).toBe('reps')
+    expect(guessExerciseMode('深蹲')).toBe('reps')
+    expect(guessExerciseMode('站立著，原地踏步')).toBe('duration')
+    expect(guessExerciseMode('抬腿走路')).toBe('duration')
+    expect(guessExerciseMode('騎車')).toBe('duration')
+  })
+  it('fills fallbacks: pace 20, MET from factor', () => {
+    const p = exerciseProfile('坐著，抬腿')
+    expect(p).toMatchObject({ mode: 'reps', repsPerMin: 20, factor: 1, met: 3.5, metEstimated: true })
+  })
+  it('saved profile overrides guess and is sanitized', () => {
+    applyCustomConfig({ exerciseProfiles: { 原地踏步: { mode: 'reps', repsPerMin: 999, met: 4 }, x: { mode: 'bad' } } })
+    const p = exerciseProfile('原地踏步')
+    expect(p.mode).toBe('reps')
+    expect(p.repsPerMin).toBe(20) // 999 rejected -> default
+    expect(p).toMatchObject({ met: 4, metEstimated: false })
+    expect(live.exerciseProfiles.x).toBeUndefined()
+  })
+  it('reps x sets become minutes at the pace', () => {
+    expect(repsToMinutes(50, 2, 20)).toBe(5)
+    expect(repsToMinutes(50, 1, 30)).toBe(1.7)
+    expect(repsToMinutes(0, 1, 20)).toBe(0.1)
+  })
+  it('kcal = MET x kg x hours', () => {
+    expect(exerciseKcal(3.5, 70, 60)).toBe(245)
+    expect(exerciseKcal(5, 60, 6)).toBe(30)
+  })
+})
+
+describe('normalizeExerciseProfile', () => {
+  it('clamps AI values and rejects missing factor / met', () => {
+    expect(normalizeExerciseProfile({ mode: 'reps', reps_per_min: 500, factor: 9, met: 0.2, reason: 'r' }))
+      .toEqual({ mode: 'reps', repsPerMin: 200, factor: 5, met: 1, reason: 'r' })
+    expect(normalizeExerciseProfile({ mode: 'x', reps_per_min: 0, factor: 1, met: 3.5 }).mode).toBe('duration')
+    expect(() => normalizeExerciseProfile({ factor: 'x', met: 3 })).toThrow()
   })
 })

@@ -1,7 +1,17 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { equivalentMinutes, exerciseFactor, live, medsForSlot, medLabel, updateCustom, resetCustom } from '../data/presets.js'
-import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, suggestExerciseFactor, summarizeDay, summarizeDayAI } from '../services/gemini.js'
+import {
+  equivalentMinutes,
+  exerciseKcal,
+  exerciseProfile,
+  live,
+  medsForSlot,
+  medLabel,
+  repsToMinutes,
+  updateCustom,
+  resetCustom,
+} from '../data/presets.js'
+import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, suggestExerciseProfile, summarizeDay, summarizeDayAI } from '../services/gemini.js'
 import { getGeminiKey } from '../firebase.js'
 import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
@@ -316,16 +326,9 @@ const medDone = computed(() => {
 })
 
 // ---------- exercise & exercise type presets ----------
-const REPS_EXERCISE_TYPES = ['抬腳跟']
-
-function isRepsExerciseType(type) {
-  return REPS_EXERCISE_TYPES.includes(String(type || '').trim())
-}
-
-/** Reps mode still stores minutes so charts and daily totals stay compatible. 20 reps ≈ 1 minute. */
-function estimateRepsMinutes(reps) {
-  return Math.max(1, Math.round((Number(reps) || 0) / 20))
-}
+// Every log stores duration_min = walking-equivalent minutes (counts toward the target), plus
+// actual_min, factor and a reference-only kcal estimate. Reps are turned into minutes with the
+// type's pace (repsPerMin), so charts and daily totals stay in minutes.
 
 function isRepsLog(log) {
   return !!(log && (log.mode === 'reps' || Number(log.reps) > 0))
@@ -339,14 +342,27 @@ const exerciseForm = reactive({
   reps: 50,
   sets: 3,
 })
-const currentFactor = computed(() => exerciseFactor(exerciseForm.type))
-/** Minutes shown for reps mode: actual (reps/20) x factor. */
-const repsDurationPreview = computed(() => equivalentMinutes(estimateRepsMinutes(exerciseForm.reps), currentFactor.value))
+const currentProfile = computed(() => exerciseProfile(exerciseForm.type))
+const currentFactor = computed(() => currentProfile.value.factor)
+const repsActualPreview = computed(() =>
+  repsToMinutes(exerciseForm.reps, exerciseForm.sets, currentProfile.value.repsPerMin),
+)
+const repsDurationPreview = computed(() => equivalentMinutes(repsActualPreview.value, currentFactor.value))
 const durationEquivalent = computed(() => equivalentMinutes(exerciseForm.duration, currentFactor.value))
+const kcalPreview = computed(() =>
+  exerciseKcal(
+    currentProfile.value.met,
+    live.targets.userWeight,
+    exerciseForm.mode === 'reps' ? repsActualPreview.value : Number(exerciseForm.duration) || 0,
+  ),
+)
+const exerciseKcalTotal = computed(() =>
+  (props.day.exercise_logs || []).reduce((sum, x) => sum + (Number(x?.kcal) || 0), 0),
+)
 
 function selectExerciseType(type) {
   exerciseForm.type = type
-  exerciseForm.mode = isRepsExerciseType(type) ? 'reps' : 'duration'
+  exerciseForm.mode = exerciseProfile(type).mode
 }
 
 function setExerciseMode(mode) {
@@ -360,7 +376,7 @@ function bumpReps(amount) {
 watch(
   () => exerciseForm.type,
   (type) => {
-    if (isRepsExerciseType(type)) exerciseForm.mode = 'reps'
+    exerciseForm.mode = exerciseProfile(type).mode
   },
 )
 const exerciseEditMode = ref(false)
@@ -376,6 +392,8 @@ function addExerciseLog(quickMin = null) {
   exerciseManageError.value = ''
   const type = (exerciseForm.type || '').trim() || '餐後踏步'
   const repsMode = quickMin == null && exerciseForm.mode === 'reps'
+  const profile = exerciseProfile(type)
+  const weight = live.targets.userWeight
   let entry
   if (repsMode) {
     const reps = Math.round(Number(exerciseForm.reps) || 0)
@@ -384,14 +402,17 @@ function addExerciseLog(quickMin = null) {
       exerciseManageError.value = '請輸入大於 0 的次數。'
       return
     }
+    const actual = repsToMinutes(reps, sets, profile.repsPerMin)
     entry = {
       id: uid('ex'),
       time: nowTime(),
       type,
       mode: 'reps',
-      duration_min: equivalentMinutes(estimateRepsMinutes(reps), exerciseFactor(type)),
-      actual_min: estimateRepsMinutes(reps),
-      factor: exerciseFactor(type),
+      duration_min: equivalentMinutes(actual, profile.factor),
+      actual_min: actual,
+      factor: profile.factor,
+      met: profile.met,
+      kcal: exerciseKcal(profile.met, weight, actual),
       reps,
       sets,
       note: exerciseForm.note.trim(),
@@ -408,9 +429,11 @@ function addExerciseLog(quickMin = null) {
       time: nowTime(),
       type,
       mode: 'duration',
-      duration_min: equivalentMinutes(dMin, exerciseFactor(type)),
+      duration_min: equivalentMinutes(dMin, profile.factor),
       actual_min: dMin,
-      factor: exerciseFactor(type),
+      factor: profile.factor,
+      met: profile.met,
+      kcal: exerciseKcal(profile.met, weight, dMin),
       note: exerciseForm.note.trim(),
       source: 'manual',
     }
@@ -435,7 +458,7 @@ function addExerciseLog(quickMin = null) {
     syncExerciseTotal(d)
   })
   exerciseForm.note = ''
-  const amount = entry.mode === 'reps' ? `${entry.reps} 下` : `${entry.actual_min} 分`
+  const amount = entry.mode === 'reps' ? `${entry.reps} 下 × ${entry.sets} 組` : `${entry.actual_min} 分`
   const entryId = entry.id
   offerUndo(`已記錄 ${entry.type} ${amount}`, () => {
     // Remove exactly that entry (by its unique id); no-op if it was already deleted.
@@ -470,6 +493,8 @@ function addExerciseTypePreset() {
   updateCustom('exerciseTypes', [...live.exerciseTypes, t])
   exerciseForm.type = t
   newExerciseType.value = ''
+  // New type: ask AI right away when a key is set; otherwise the name-based guess applies.
+  if (getGeminiKey()) askProfileSuggestion(t)
 }
 
 function deleteExerciseTypePreset(t) {
@@ -480,36 +505,73 @@ function deleteExerciseTypePreset(t) {
   }
 }
 
-const factorSuggest = reactive({ type: '', busy: false, factor: null, reason: '', error: '' })
+// AI suggestions for exercise types: [{ type, busy, error, mode, repsPerMin, factor, met, reason }].
+// Nothing is saved until the user presses 採用.
+const profileSuggestions = ref([])
+const evaluatingAll = ref(false)
 
-async function askFactorSuggestion(t) {
+async function askProfileSuggestion(t) {
   const apiKey = getGeminiKey()
   if (!apiKey) {
     exerciseManageError.value = '尚未設定 Gemini API Key。'
     emit('open-settings')
     return
   }
-  Object.assign(factorSuggest, { type: t, busy: true, factor: null, reason: '', error: '' })
+  const item = reactive({ type: t, busy: true, error: '' })
+  profileSuggestions.value = [...profileSuggestions.value.filter((s) => s.type !== t), item]
   try {
+    const p = exerciseProfile(t)
     const recent = (props.day.exercise_logs || []).filter((e) => e && e.type === t)
-    const res = await suggestExerciseFactor({ apiKey, type: t, current: exerciseFactor(t), recent })
-    factorSuggest.factor = res.factor
-    factorSuggest.reason = res.reason
+    const current = { mode: p.mode, repsPerMin: p.repsPerMin, factor: p.factor, met: p.metEstimated ? null : p.met }
+    Object.assign(item, await suggestExerciseProfile({ apiKey, type: t, current, recent }))
   } catch (err) {
-    factorSuggest.error = err.message || String(err)
+    item.error = err.message || String(err)
   } finally {
-    factorSuggest.busy = false
+    item.busy = false
   }
 }
 
-function adoptFactorSuggestion() {
-  if (factorSuggest.factor == null) return
-  setExerciseFactor(factorSuggest.type, factorSuggest.factor)
-  dismissFactorSuggestion()
+async function evaluateAllTypes() {
+  if (!getGeminiKey()) return askProfileSuggestion(live.exerciseTypes[0])
+  evaluatingAll.value = true
+  try {
+    for (const t of [...live.exerciseTypes]) await askProfileSuggestion(t)
+  } finally {
+    evaluatingAll.value = false
+  }
 }
 
-function dismissFactorSuggestion() {
-  Object.assign(factorSuggest, { type: '', busy: false, factor: null, reason: '', error: '' })
+function adoptProfileSuggestion(s) {
+  if (s.busy || s.error) return
+  setExerciseProfile(s.type, { mode: s.mode, repsPerMin: s.repsPerMin, met: s.met })
+  setExerciseFactor(s.type, s.factor)
+  dismissProfileSuggestion(s)
+}
+
+function adoptAllSuggestions() {
+  for (const s of [...profileSuggestions.value]) adoptProfileSuggestion(s)
+}
+
+function dismissProfileSuggestion(s) {
+  profileSuggestions.value = profileSuggestions.value.filter((x) => x !== s)
+}
+
+const MODE_LABEL = { reps: '次數', duration: '時間' }
+
+function setExerciseProfile(t, patch) {
+  if (patch.repsPerMin != null && !(Number(patch.repsPerMin) >= 1 && Number(patch.repsPerMin) <= 200)) {
+    exerciseManageError.value = '每分鐘次數請填 1 ～ 200。'
+    return
+  }
+  if (patch.met != null && patch.met !== '' && !(Number(patch.met) >= 1 && Number(patch.met) <= 20)) {
+    exerciseManageError.value = 'MET 請填 1 ～ 20（散步約 3.5）。'
+    return
+  }
+  exerciseManageError.value = ''
+  const next = { ...(live.exerciseProfiles[t] || {}), ...patch }
+  if (patch.met === '') delete next.met // cleared -> estimate from the factor again
+  updateCustom('exerciseProfiles', { ...live.exerciseProfiles, [t]: next })
+  if (exerciseForm.type === t) exerciseForm.mode = exerciseProfile(t).mode
 }
 
 function setExerciseFactor(t, value) {
@@ -523,8 +585,8 @@ function setExerciseFactor(t, value) {
 }
 
 function resetExerciseTypePresets() {
-  if (!window.confirm('確定要恢復預設運動類型快選與換算係數？')) return
-  resetCustom(['exerciseTypes', 'exerciseFactors'])
+  if (!window.confirm('確定要恢復預設運動類型快選、記錄方式與換算係數？')) return
+  resetCustom(['exerciseTypes', 'exerciseFactors', 'exerciseProfiles'])
   exerciseForm.type = live.exerciseTypes[0] || '餐後踏步'
   exerciseManageError.value = ''
 }
@@ -1298,6 +1360,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
           <p class="mt-0.5 text-xs" :class="exerciseReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
             今日累計：{{ day.exercise_min || 0 }} 分鐘 (目標 {{ TARGETS.exerciseTarget }} 分)
+            <span v-if="exerciseKcalTotal" class="font-normal text-slate-500"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
           </p>
         </div>
         <button
@@ -1359,8 +1422,8 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               class="w-20 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
             />
             <span class="text-xs text-slate-500">分</span>
-            <span v-if="currentFactor !== 1" class="text-xs font-medium text-indigo-700">
-              × {{ currentFactor }} ≈ {{ durationEquivalent }} 分（折合散步）
+            <span class="text-xs font-medium text-indigo-700">
+              <template v-if="currentFactor !== 1">× {{ currentFactor }} ≈ {{ durationEquivalent }} 分（折合散步）· </template>約 {{ kcalPreview }} kcal
             </span>
             <button
               type="button"
@@ -1422,7 +1485,10 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             >
               +100下
             </button>
-            <span class="text-xs font-medium text-indigo-700">約折合 {{ repsDurationPreview }} 分鐘</span>
+            <span class="text-xs font-medium text-indigo-700">
+              約 {{ repsActualPreview }} 分（每分鐘 {{ currentProfile.repsPerMin }} 下）<template v-if="currentFactor !== 1"> × {{ currentFactor }}</template>
+              ≈ 折合散步 {{ repsDurationPreview }} 分 · 約 {{ kcalPreview }} kcal
+            </span>
           </div>
         </div>
 
@@ -1447,58 +1513,136 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
 
       <!-- Edit mode: manage exercise type presets -->
       <div v-else class="mt-3 space-y-3 rounded-xl border border-teal-200 bg-teal-50/40 p-3">
-        <p class="text-xs text-slate-500">管理常用的運動項目快選標籤，修改後自動儲存。每個項目旁的數字是「換算係數」：1＝與散步每分鐘效果相同，&gt;1 表示強度較高、每分鐘折算更多分鐘。預設值為暫定，建議與醫師或教練確認後調整。</p>
-        <div class="flex flex-wrap gap-2">
-          <span
-            v-for="t in live.exerciseTypes"
-            :key="t"
-            class="inline-flex items-center gap-1 rounded-full bg-white py-1 pl-3 pr-1.5 text-xs text-slate-700 ring-1 ring-slate-200"
-          >
-            {{ t }}
-            <input
-              :value="live.exerciseFactors[t] ?? 1"
-              type="number"
-              step="0.1"
-              min="0.1"
-              max="5"
-              class="w-14 rounded border border-slate-200 px-1 py-0.5 text-center text-xs"
-              :aria-label="`${t} 換算係數`"
-              @change="setExerciseFactor(t, $event.target.value)"
-            />
-            <button
-              type="button"
-              class="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700 ring-1 ring-indigo-200 active:bg-indigo-100 disabled:opacity-50"
-              :disabled="factorSuggest.busy"
-              :aria-label="`AI 建議 ${t} 的換算係數`"
-              @click="askFactorSuggestion(t)"
-            >
-              AI
-            </button>
-            <button
-              type="button"
-              class="grid size-6 place-items-center rounded-full text-rose-500 active:bg-rose-50"
-              @click="deleteExerciseTypePreset(t)"
-            >
-              ✕
-            </button>
-          </span>
-          <span v-if="!live.exerciseTypes.length" class="text-xs text-slate-400">尚無運動快選</span>
-        </div>
-        <div v-if="factorSuggest.type" class="rounded-lg bg-indigo-50 p-2.5 text-xs text-indigo-900 ring-1 ring-indigo-200">
-          <p v-if="factorSuggest.busy">AI 評估「{{ factorSuggest.type }}」中…</p>
-          <p v-else-if="factorSuggest.error" class="text-rose-700">{{ factorSuggest.error }}</p>
-          <template v-else>
-            <p>
-              AI 建議「{{ factorSuggest.type }}」係數 <b>{{ factorSuggest.factor }}</b>（目前 {{ live.exerciseFactors[factorSuggest.type] ?? 1 }}）
-            </p>
-            <p v-if="factorSuggest.reason" class="mt-0.5 text-indigo-800">{{ factorSuggest.reason }}</p>
-            <p class="mt-0.5 text-[11px] text-indigo-700">僅為粗略參考，不是醫療建議；採用前建議與醫師或教練確認。</p>
-            <div class="mt-2 flex gap-2">
-              <button type="button" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-white active:bg-indigo-700" @click="adoptFactorSuggestion">採用</button>
-              <button type="button" class="rounded-lg bg-white px-3 py-1.5 text-slate-700 ring-1 ring-slate-300 active:bg-slate-50" @click="dismissFactorSuggestion">略過</button>
+        <p class="text-xs text-slate-500">
+          每個運動項目可設定：記錄方式（時間或次數）、每分鐘大約幾下（次數換算成分鐘用）、換算係數（1＝與散步每分鐘效果相同，&gt;1 表示強度較高），以及 MET（估算卡路里用，散步約 3.5；留空則由係數推估）。
+          計入目標的是「折合散步分鐘」；卡路里只是參考。按「AI」可取得建議，確認後才會儲存。數值為粗略估計，建議與醫師或教練確認。
+        </p>
+        <button
+          type="button"
+          class="w-full rounded-lg bg-indigo-600 py-2 text-xs font-medium text-white active:bg-indigo-700 disabled:opacity-50"
+          :disabled="evaluatingAll || !live.exerciseTypes.length"
+          @click="evaluateAllTypes"
+        >
+          {{ evaluatingAll ? 'AI 評估中…' : '🤖 AI 評估全部項目' }}
+        </button>
+        <div class="space-y-2">
+          <div v-for="t in live.exerciseTypes" :key="t" class="rounded-lg bg-white p-2 text-xs text-slate-700 ring-1 ring-slate-200">
+            <div class="flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate font-medium text-slate-800">{{ t }}</span>
+              <button
+                type="button"
+                class="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] text-indigo-700 ring-1 ring-indigo-200 active:bg-indigo-100 disabled:opacity-50"
+                :disabled="profileSuggestions.some((s) => s.type === t && s.busy)"
+                :aria-label="`AI 評估 ${t}`"
+                @click="askProfileSuggestion(t)"
+              >
+                AI
+              </button>
+              <button
+                type="button"
+                class="grid size-6 place-items-center rounded-full text-rose-500 active:bg-rose-50"
+                :aria-label="`刪除 ${t}`"
+                @click="deleteExerciseTypePreset(t)"
+              >
+                ✕
+              </button>
             </div>
-          </template>
-          <button v-if="factorSuggest.busy || factorSuggest.error" type="button" class="mt-1 text-[11px] text-slate-500 underline" @click="dismissFactorSuggestion">關閉</button>
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-slate-500">
+              <label class="flex items-center gap-1">
+                記錄
+                <select
+                  :value="exerciseProfile(t).mode"
+                  class="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-800"
+                  @change="setExerciseProfile(t, { mode: $event.target.value })"
+                >
+                  <option value="duration">時間</option>
+                  <option value="reps">次數</option>
+                </select>
+              </label>
+              <label v-if="exerciseProfile(t).mode === 'reps'" class="flex items-center gap-1">
+                每分鐘
+                <input
+                  :value="exerciseProfile(t).repsPerMin"
+                  type="number"
+                  min="1"
+                  max="200"
+                  class="w-14 rounded border border-slate-200 px-1 py-0.5 text-center text-xs text-slate-800"
+                  @change="setExerciseProfile(t, { repsPerMin: Number($event.target.value) })"
+                />
+                下
+              </label>
+              <label class="flex items-center gap-1">
+                係數
+                <input
+                  :value="live.exerciseFactors[t] ?? 1"
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  max="5"
+                  class="w-14 rounded border border-slate-200 px-1 py-0.5 text-center text-xs text-slate-800"
+                  @change="setExerciseFactor(t, $event.target.value)"
+                />
+              </label>
+              <label class="flex items-center gap-1">
+                MET
+                <input
+                  :value="exerciseProfile(t).metEstimated ? '' : exerciseProfile(t).met"
+                  :placeholder="String(exerciseProfile(t).met)"
+                  type="number"
+                  step="0.1"
+                  min="1"
+                  max="20"
+                  class="w-14 rounded border border-slate-200 px-1 py-0.5 text-center text-xs text-slate-800"
+                  @change="setExerciseProfile(t, { met: $event.target.value === '' ? '' : Number($event.target.value) })"
+                />
+              </label>
+            </div>
+          </div>
+          <p v-if="!live.exerciseTypes.length" class="text-xs text-slate-400">尚無運動快選</p>
+        </div>
+
+        <div v-if="profileSuggestions.length" class="space-y-2 rounded-lg bg-indigo-50 p-2.5 text-xs text-indigo-900 ring-1 ring-indigo-200">
+          <div class="flex items-center justify-between gap-2">
+            <p class="font-medium">AI 建議（按「採用」才會儲存）</p>
+            <button
+              v-if="profileSuggestions.filter((s) => !s.busy && !s.error).length > 1"
+              type="button"
+              class="rounded-lg bg-indigo-600 px-2.5 py-1 text-white active:bg-indigo-700"
+              @click="adoptAllSuggestions"
+            >
+              全部採用
+            </button>
+          </div>
+          <div v-for="s in profileSuggestions" :key="s.type" class="rounded-lg bg-white/70 p-2">
+            <p class="font-medium text-indigo-950">{{ s.type }}</p>
+            <p v-if="s.busy" class="mt-0.5">評估中…</p>
+            <p v-else-if="s.error" class="mt-0.5 text-rose-700">{{ s.error }}</p>
+            <template v-else>
+              <p class="mt-0.5">
+                記錄：{{ MODE_LABEL[s.mode] }}<template v-if="s.mode === 'reps'"> · 每分鐘 {{ s.repsPerMin }} 下</template>
+                · 係數 {{ s.factor }} · MET {{ s.met }}
+              </p>
+              <p v-if="s.reason" class="mt-0.5 text-indigo-800">{{ s.reason }}</p>
+            </template>
+            <div class="mt-1.5 flex gap-2">
+              <button
+                v-if="!s.busy && !s.error"
+                type="button"
+                class="rounded-lg bg-indigo-600 px-3 py-1 text-white active:bg-indigo-700"
+                @click="adoptProfileSuggestion(s)"
+              >
+                採用
+              </button>
+              <button
+                type="button"
+                class="rounded-lg bg-white px-3 py-1 text-slate-700 ring-1 ring-slate-300 active:bg-slate-50"
+                @click="dismissProfileSuggestion(s)"
+              >
+                {{ s.busy || s.error ? '關閉' : '略過' }}
+              </button>
+            </div>
+          </div>
+          <p class="text-[11px] text-indigo-700">僅為粗略參考，不是醫療建議；採用前建議與醫師或教練確認。</p>
         </div>
         <div class="flex gap-2">
           <input
@@ -1540,7 +1684,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               <span
                 v-if="isRepsLog(log)"
                 class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
-              >{{ log.reps }} 下 ({{ log.sets || 1 }} 組 · 折合 {{ log.duration_min }} 分)</span>
+              >{{ log.reps }} 下 × {{ log.sets || 1 }} 組 · 折合 {{ log.duration_min }} 分</span>
               <span v-else class="ml-1.5 font-semibold text-teal-600">
                 <template v-if="log.factor && log.factor !== 1">{{ log.actual_min }} 分 × {{ log.factor }} = {{ log.duration_min }} 分（折合散步）</template>
                 <template v-else>{{ log.duration_min }} 分鐘</template>
@@ -1549,6 +1693,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
                 v-if="log.source === 'meal_tag'"
                 class="ml-1.5 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700"
               >餐點標籤連動</span>
+              <span v-if="log.kcal" class="ml-1.5 text-[11px] text-slate-400">約 {{ log.kcal }} kcal</span>
               <p v-if="log.note" class="mt-0.5 text-xs text-slate-500">{{ log.note }}</p>
             </div>
             <button class="px-2 text-slate-300 active:text-rose-500" @click="removeExerciseLog(log.id)">✕</button>

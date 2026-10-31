@@ -125,6 +125,19 @@ export const EXERCISE_FACTORS = {
   '深蹲': 1.5,
 }
 
+// How each exercise type is logged and estimated. Any field may be missing:
+// - mode: 'reps' | 'duration' (missing -> guessed from the name, see guessExerciseMode)
+// - repsPerMin: typical pace used to turn reps x sets into minutes (missing -> DEFAULT_REPS_PER_MIN)
+// - met: intensity in METs for the calorie estimate (missing -> WALKING_MET x factor)
+// AI suggests these per type; the user confirms or edits them in the exercise type editor.
+export const EXERCISE_PROFILES = {
+  '抬腳跟': { mode: 'reps', repsPerMin: 30 },
+  '深蹲': { mode: 'reps', repsPerMin: 20 },
+}
+export const DEFAULT_REPS_PER_MIN = 20
+/** Approximate MET of ordinary walking; factor 1 means "same as walking". */
+export const WALKING_MET = 3.5
+
 export const DRINK_PRESETS = [
   { id: 'drk-green-tea', name: '無糖綠茶/烏龍茶', default_cc: 500, counts_as_water: true },
   { id: 'drk-black-coffee', name: '美式黑咖啡', default_cc: 350, counts_as_water: true },
@@ -192,7 +205,7 @@ export function getBaselineDate() {
 // that all components read from.
 // =====================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o))
-const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'exerciseFactors', 'drinkPresets', 'medications', 'targets', 'labBaseline']
+const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'exerciseFactors', 'exerciseProfiles', 'drinkPresets', 'medications', 'targets', 'labBaseline']
 const TIMINGS = ['morning', 'evening', 'both']
 
 export const customConfig = reactive({})
@@ -201,6 +214,7 @@ export const live = reactive({
   tags: clone(TAGS),
   exerciseTypes: clone(EXERCISE_TYPES),
   exerciseFactors: { ...EXERCISE_FACTORS },
+  exerciseProfiles: clone(EXERCISE_PROFILES),
   drinkPresets: clone(DRINK_PRESETS),
   medications: clone(MEDICATIONS),
   targets: { ...TARGETS },
@@ -230,6 +244,9 @@ function recompute() {
   live.tags = clone(customConfig.tags ?? TAGS)
   live.exerciseTypes = clone(customConfig.exerciseTypes ?? EXERCISE_TYPES)
   live.exerciseFactors = { ...EXERCISE_FACTORS, ...(customConfig.exerciseFactors ?? {}) }
+  const profiles = clone(EXERCISE_PROFILES)
+  for (const [k, p] of Object.entries(customConfig.exerciseProfiles ?? {})) profiles[k] = { ...(profiles[k] || {}), ...p }
+  live.exerciseProfiles = profiles
   live.drinkPresets = clone(customConfig.drinkPresets ?? DRINK_PRESETS)
   live.medications = clone(customConfig.medications ?? MEDICATIONS)
   const merged = { ...TARGETS, ...(customConfig.targets ?? {}) }
@@ -269,6 +286,21 @@ export function sanitizeCustomConfig(cfg) {
       }
     }
     out.exerciseFactors = f
+  }
+  if (cfg.exerciseProfiles && typeof cfg.exerciseProfiles === 'object' && !Array.isArray(cfg.exerciseProfiles)) {
+    const profiles = {}
+    for (const [k, raw] of Object.entries(cfg.exerciseProfiles)) {
+      const key = String(k).trim()
+      if (!key || key.length > 40 || key === '__proto__' || !raw || typeof raw !== 'object') continue
+      const p = {}
+      if (raw.mode === 'reps' || raw.mode === 'duration') p.mode = raw.mode
+      const rpm = Number(raw.repsPerMin)
+      if (raw.repsPerMin != null && raw.repsPerMin !== '' && Number.isFinite(rpm) && rpm >= 1 && rpm <= 200) p.repsPerMin = Math.round(rpm)
+      const met = Number(raw.met)
+      if (raw.met != null && raw.met !== '' && Number.isFinite(met) && met >= 1 && met <= 20) p.met = Math.round(met * 10) / 10
+      if (Object.keys(p).length) profiles[key] = p
+    }
+    out.exerciseProfiles = profiles
   }
   if (Array.isArray(cfg.drinkPresets)) {
     out.drinkPresets = cfg.drinkPresets
@@ -328,7 +360,7 @@ export function getCustomConfig() {
   return clone(customConfig)
 }
 
-/** Override one section ('presets' | 'tags' | 'exerciseTypes' | 'drinkPresets' | 'medications' | 'targets' | 'labBaseline'). */
+/** Override one section (see SECTIONS). */
 export function updateCustom(section, value) {
   if (!SECTIONS.includes(section)) return
   const clean = sanitizeCustomConfig({ [section]: value })[section]
@@ -354,6 +386,46 @@ export function exerciseFactor(type) {
 /** Minutes counted toward the daily target: actual minutes x factor, at least 1. */
 export function equivalentMinutes(actualMin, factor = 1) {
   return Math.max(1, Math.round((Number(actualMin) || 0) * (Number(factor) || 1)))
+}
+
+const DURATION_HINT = /走|跑|踏步|騎|游|跳繩|有氧|瑜伽|拉筋|伸展/
+const REPS_HINT = /抬|蹲|伏地|挺身|仰臥|捲腹|弓步|開合跳|波比|舉|划船/
+
+/** Fallback when a type has no saved mode: counted moves ("抬", "蹲"...) -> reps, everything else -> duration. */
+export function guessExerciseMode(type) {
+  const t = String(type || '')
+  if (DURATION_HINT.test(t)) return 'duration'
+  return REPS_HINT.test(t) ? 'reps' : 'duration'
+}
+
+/**
+ * Effective settings for an exercise type, with fallbacks filled in.
+ * `metEstimated` is true when the MET comes from the factor instead of being set explicitly.
+ */
+export function exerciseProfile(type) {
+  const key = String(type || '').trim()
+  const p = live.exerciseProfiles[key] || {}
+  const factor = exerciseFactor(key)
+  return {
+    mode: p.mode || guessExerciseMode(key),
+    repsPerMin: p.repsPerMin || DEFAULT_REPS_PER_MIN,
+    met: p.met || Math.round(WALKING_MET * factor * 10) / 10,
+    metEstimated: !p.met,
+    factor,
+  }
+}
+
+/** Actual minutes for reps x sets at the given pace (1 decimal, at least 0.1). */
+export function repsToMinutes(reps, sets = 1, repsPerMin = DEFAULT_REPS_PER_MIN) {
+  const total = (Number(reps) || 0) * Math.max(1, Number(sets) || 1)
+  const pace = Number(repsPerMin) > 0 ? Number(repsPerMin) : DEFAULT_REPS_PER_MIN
+  return Math.max(0.1, Math.round((total / pace) * 10) / 10)
+}
+
+/** Rough calorie estimate: MET x body weight (kg) x hours. Reference only, never a target. */
+export function exerciseKcal(met, weightKg, actualMin) {
+  const w = Number(weightKg) > 0 ? Number(weightKg) : 70
+  return Math.max(0, Math.round((Number(met) || 0) * w * ((Number(actualMin) || 0) / 60)))
 }
 
 /** Medications that should be taken in a slot ('morning' | 'evening'). */
