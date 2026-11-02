@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { applyCustomConfig, getBaselineDate, LAB_FIELDS, MEDICATIONS, medIdFromName } from '../presets.js'
 import { labContextBlock, latestLabSnapshot } from '../labContext.js'
+import { labTrendZh } from '../report.js'
 
 afterEach(() => applyCustomConfig({}))
 
@@ -16,6 +17,7 @@ describe('lab baseline lives in custom config', () => {
     const rows = latestLabSnapshot([{ date: '2026-12-01', hba1c: 8 }])
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ key: 'hba1c', latest: 8, trend: 'no baseline' })
+    expect(labTrendZh(rows[0].trend)).toBe('無基準值')
   })
 
   it('applies and sanitizes a configured baseline', () => {

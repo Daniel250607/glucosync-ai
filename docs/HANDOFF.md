@@ -14,6 +14,7 @@
   - `health_context.example.md` 改成一行一項；原本合併在同一行的寫法，基準值匯入讀不到。
   - 數值後面直接接單位（例如 `5.5%`）也能讀到。
   - 送進 AI 的基準值和追蹤值一樣，要先通過合理範圍檢查。
+- 檢查 `report.js`、`sickDay.js`：`sickDay.js` 沒有問題；`report.js` 修正回診報告中「有追蹤值、沒有基準值」的檢驗趨勢顯示「—」，改為「無基準值」。
 - 上線後實際測試通過：配對確認視窗、目標警告、兩台裝置的設定同步、匯入時的刪除詢問、匯入藥物後的 id。
 
 ## 2026-11-02 公司完成的事
@@ -31,7 +32,7 @@
 ## 待辦
 
 - [ ] 使用者端：金鑰與 Firebase Console 設定的檢查（使用者已知道細節）。
-- [ ] 還沒檢查的檔案：`report.js`、`sickDay.js`、圖表元件、`LabMilestones.vue`、`ClinicReport.vue`、`App.vue` 的其餘部分。建議先看 `report.js`、`sickDay.js`。
+- [ ] 還沒檢查的檔案：圖表元件、`LabMilestones.vue`、`ClinicReport.vue`、`App.vue` 的其餘部分。建議先看 `LabMilestones.vue`、`ClinicReport.vue`。
 
 ## 已做的決定
 

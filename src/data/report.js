@@ -137,6 +137,7 @@ const TREND_ZH = {
   higher: '上升',
   lower: '下降',
   'no follow-up yet': '尚無追蹤',
+  'no baseline': '無基準值',
 }
 export function labStatusZh(s) {
   if (typeof s === 'string' && s.startsWith('out of range')) return '超出範圍'
