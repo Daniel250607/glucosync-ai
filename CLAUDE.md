@@ -26,4 +26,4 @@
 - `docs/health_context.md` 是個人健康資料，已列在 `.gitignore`，絕不能 commit；範例檔是 `docs/health_context.example.md`。
 - 所有 `VITE_*` 環境變數都會被打包進公開的 JS，所以不能放任何秘密。
 - commit 訊息用繁體中文：第一行是摘要，下面用條列寫變更內容。
-- 改完程式後，檢查本檔與 `docs/HANDOFF.md` 是否需要一起更新。
+- 改完程式後，檢查 `README.md`、本檔與 `docs/HANDOFF.md` 是否需要一起更新（README 會顯示在公開的 GitHub 首頁）。
