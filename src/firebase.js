@@ -183,10 +183,7 @@ export function emptyDay(date) {
     exercise_min: 0,
     exercise_logs: [],
     drinks: [],
-    meds: {
-      morning: { eutomin: false, forxiga: false, glitos: false, roty: false },
-      evening: { eutomin: false },
-    },
+    meds: { morning: {}, evening: {} }, // { [medication id]: taken } — ids come from the user's medication list
     meals: [],
   }
 }

@@ -1,6 +1,6 @@
 // Gemini client using Structured Outputs (JSON Schema).
 // The API key and model ID are never hardcoded: they are read from user settings / env.
-import { getBaselineDate, hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
+import { DEFAULT_REPS_PER_MIN, getBaselineDate, hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
 import { followUpLabRecords, labContextBlock } from '../data/labContext.js'
 import { sickPromptContext } from '../data/sickDay.js'
 import { eatenBefore, isClockTime } from '../data/mealTime.js'
@@ -467,7 +467,8 @@ export function normalizeExerciseProfile(out) {
   if (factor == null || met == null) throw new Error('AI 沒有回傳有效的數值。')
   return {
     mode: out?.mode === 'reps' ? 'reps' : 'duration',
-    repsPerMin: clampTo(out?.reps_per_min, 1, 200, 0) ?? 20,
+    // Duration activities answer 0: keep the default pace instead of clamping 0 up to 1 rep/min.
+    repsPerMin: Number(out?.reps_per_min) >= 1 ? clampTo(out.reps_per_min, 1, 200, 0) : DEFAULT_REPS_PER_MIN,
     factor,
     met,
     reason: String(out?.reason || '').slice(0, 120),

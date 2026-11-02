@@ -705,13 +705,44 @@ function renderQrSvg(text) {
   return qr.createSvgTag({ scalable: true, margin: 2 })
 }
 
+function pairFirebaseConfig(fb) {
+  if (!fb) return null
+  return parseFirebaseConfig(typeof fb === 'string' ? fb : JSON.stringify(fb))
+}
+
+/** Firebase must be (re)initialised when pairing brings a config and none / another project is active. */
+function pairNeedsReload(fb, prevProjectId) {
+  const cfg = pairFirebaseConfig(fb)
+  if (!cfg || !cfg.projectId) return false
+  return !isFirebaseConfigured() || cfg.projectId !== prevProjectId
+}
+
+/**
+ * A pairing link can be sent by anyone, so ask before it changes this browser's settings.
+ * Switching to another Firebase project is called out: after sign-in the health records would sync there.
+ */
+function confirmPairing(fb) {
+  const incoming = pairFirebaseConfig(fb)
+  const current = getStoredFirebaseConfig()
+  const lines = ['這個網址要把配對設定（Gemini API Key、模型）匯入此瀏覽器。']
+  if (incoming && incoming.projectId && (!current || current.projectId !== incoming.projectId)) {
+    lines.push(
+      '',
+      `⚠️ 也會把雲端資料庫設為 Firebase 專案「${incoming.projectId}」${current && current.projectId ? `（目前是「${current.projectId}」）` : ''}。`,
+      '登入後，您的健康紀錄會同步到這個專案；不是您自己的專案請按取消。',
+    )
+  }
+  lines.push('', '只有在您剛用自己的另一台裝置產生這個 QR Code 時才按確定。')
+  return window.confirm(lines.join('\n'))
+}
+
 function persistPairFirebase(fb) {
-  if (!fb) return false
+  const cfg = pairFirebaseConfig(fb)
+  if (!cfg) return false
   const prev = loadSettings()
-  const text = typeof fb === 'string' ? fb : JSON.stringify(fb)
-  if (!parseFirebaseConfig(text)) return false
-  saveSettings({ ...prev, firebaseConfig: text })
-  return !isFirebaseConfigured()
+  const prevProjectId = (getStoredFirebaseConfig() || {}).projectId
+  saveSettings({ ...prev, firebaseConfig: typeof fb === 'string' ? fb : JSON.stringify(fb) })
+  return pairNeedsReload(fb, prevProjectId)
 }
 
 function ingestQrPairHash() {
@@ -726,6 +757,10 @@ function ingestQrPairHash() {
     return
   }
   if (payload.m === 'cloud' && payload.t && payload.k) {
+    if (!confirmPairing(payload.fb)) {
+      showToast('已取消配對，設定未變更。')
+      return
+    }
     const needsReload = persistPairFirebase(payload.fb)
     writePendingPair({ t: payload.t, k: payload.k })
     if (needsReload) {
@@ -742,6 +777,11 @@ function consumeLocalPair(payload) {
     showToast('⛔ 此 QR Code 已失效或已被使用過')
     return false
   }
+  if (!confirmPairing(payload.fb)) {
+    showToast('已取消配對，設定未變更。')
+    return false
+  }
+  const prevProjectId = (getStoredFirebaseConfig() || {}).projectId
   applyPairedSettings({
     geminiKey: payload.gk,
     geminiModel: payload.gm,
@@ -755,7 +795,7 @@ function consumeLocalPair(payload) {
   settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
   settings.thinkingBudget = normalizeThinkingBudget(s.thinkingBudget)
   showToast('🎉 手機配對完成！')
-  if (payload.fb && !isFirebaseConfigured()) location.reload()
+  if (pairNeedsReload(payload.fb, prevProjectId)) location.reload()
   return true
 }
 
@@ -863,6 +903,16 @@ async function generateQrPairing() {
         showToast('✅ 手機配對成功，此 QR Code 已自動銷毀失效！')
       })
     } else {
+      // Offline QR: the key travels in plain text and expiry / one-time use are only checked by the
+      // scanning device, so a photo of the QR keeps working. Warn before showing it.
+      if (
+        settings.geminiApiKey.trim() &&
+        !window.confirm(
+          '目前未登入雲端，只能產生離線 QR Code：\n\nGemini API Key 會以未加密方式放在 QR Code 裡。任何人拍到它（或從掃描 App 的紀錄）都能取得金鑰，5 分鐘時效也擋不住。\n\n建議先用 Google 登入再產生（加密配對）。仍要產生嗎？',
+        )
+      ) {
+        return
+      }
       const n = randomHex(16)
       payload = {
         m: 'local',
@@ -1297,7 +1347,7 @@ const qrCountdownLabel = computed(() => {
             <div v-if="qrPair.active" class="mt-3 text-center">
               <div class="mx-auto max-w-[220px] overflow-hidden rounded-xl bg-white p-2 ring-1 ring-slate-200" v-html="qrPair.svg"></div>
               <p class="mt-2 text-sm font-semibold text-slate-700">剩餘 {{ qrCountdownLabel }}</p>
-              <p class="text-xs text-slate-400">{{ qrPair.mode === 'cloud' ? '雲端單次銷毀模式' : '離線時效 / 單次 nonce 模式' }}</p>
+              <p class="text-xs text-slate-400">{{ qrPair.mode === 'cloud' ? '雲端單次銷毀模式' : '⚠️ 離線模式：QR 內含明文 API Key，請勿讓他人拍攝' }}</p>
               <button type="button" class="mt-2 text-sm text-rose-600" @click="destroyQrPairing(false)">✕ 立即銷毀 QR Code</button>
             </div>
           </section>
