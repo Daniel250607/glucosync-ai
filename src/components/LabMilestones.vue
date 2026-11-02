@@ -3,7 +3,7 @@ import { computed, inject, reactive, ref } from 'vue'
 import { LAB_FIELDS, URINE_QUALITATIVE, getBaselineDate, hydrationRangeFromWeight, live, updateCustom, resetCustom } from '../data/presets.js'
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
-import { sanitizeQualitative } from '../data/labContext.js'
+import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
 import { parseBaselineLabs } from '../data/healthContextImport.js'
 import LabTrendChart from './LabTrendChart.vue'
 import ClinicReport from './ClinicReport.vue'
@@ -19,6 +19,17 @@ const showToast = inject('showToast', () => {})
 const reportOpen = ref(false)
 
 const latest = computed(() => (props.labs.length ? props.labs[props.labs.length - 1] : null))
+/** Most recent value per field (a follow-up may cover only some fields), same as the report and AI prompts. */
+const latestByField = computed(() => {
+  const out = {}
+  for (const l of props.labs) {
+    for (const f of [...LAB_FIELDS, ...URINE_QUALITATIVE]) {
+      const v = l[f.key]
+      if (v !== '' && v != null) out[f.key] = { value: v, date: l.date }
+    }
+  }
+  return out
+})
 
 function statusOf(field, value) {
   if (value == null || value === '' || field.target == null) return 'none'
@@ -36,6 +47,14 @@ function delta(field, value) {
   const d = Number(value) - field.baseline
   const sign = d > 0 ? '+' : ''
   return `${sign}${Math.round(d * 100) / 100}`
+}
+
+/** Labels of filled numeric fields outside the plausible range (typos would otherwise be dropped silently from AI / report). */
+function implausibleFields(values) {
+  return LAB_FIELDS.filter((f) => {
+    const v = values[f.key]
+    return v !== '' && v != null && sanitizeLabNumber(f.key, v) == null
+  }).map((f) => f.label)
 }
 
 // ---------- form ----------
@@ -61,6 +80,11 @@ function submit() {
       return
     }
     qual[k] = v
+  }
+  const bad = implausibleFields(form)
+  if (bad.length) {
+    formError.value = `數值超出合理範圍，請確認：${bad.join('、')}`
+    return
   }
   const lab = { date: form.date, note: form.note || '', u_sugar: qual.u_sugar || '', u_ketones: qual.u_ketones || '' }
   let count = 0
@@ -109,6 +133,11 @@ function saveBaseline() {
   baselineMsg.value = ''
   if (!baselineForm.date) {
     baselineMsg.value = '請選擇基準檢驗日期。'
+    return
+  }
+  const bad = implausibleFields(baselineForm.values)
+  if (bad.length) {
+    baselineMsg.value = `數值超出合理範圍，請確認：${bad.join('、')}`
     return
   }
   const values = {}
@@ -232,15 +261,15 @@ async function runEvaluation() {
               <td class="py-2 pr-2 text-right text-slate-600">{{ f.baseline ?? '—' }} <span class="text-xs text-slate-400">{{ f.unit }}</span></td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ f.targetLabel }}</td>
               <td class="py-2 pr-2 text-right font-medium text-slate-800">
-                <template v-if="latest && latest[f.key] != null">
-                  {{ latest[f.key] }}
-                  <span class="text-xs text-slate-400">({{ delta(f, latest[f.key]) }})</span>
+                <template v-if="latestByField[f.key]">
+                  <span :title="latestByField[f.key].date">{{ latestByField[f.key].value }}</span>
+                  <span class="text-xs text-slate-400">({{ delta(f, latestByField[f.key].value) }})</span>
                 </template>
                 <template v-else>—</template>
               </td>
               <td class="py-2 text-right">
-                <span class="rounded-full px-2 py-0.5 text-xs" :class="STATUS_STYLE[statusOf(f, latest?.[f.key])]">
-                  {{ STATUS_TEXT[statusOf(f, latest?.[f.key])] }}
+                <span class="rounded-full px-2 py-0.5 text-xs" :class="STATUS_STYLE[statusOf(f, latestByField[f.key]?.value)]">
+                  {{ STATUS_TEXT[statusOf(f, latestByField[f.key]?.value)] }}
                 </span>
               </td>
             </tr>
@@ -248,7 +277,7 @@ async function runEvaluation() {
               <td class="py-2 pr-2 text-slate-700">{{ u.label }}</td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ u.baseline ?? '—' }}</td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ u.key === 'u_ketones' ? '陰性' : '改善' }}</td>
-              <td class="py-2 pr-2 text-right font-medium text-slate-800">{{ latest?.[u.key] || '—' }}</td>
+              <td class="py-2 pr-2 text-right font-medium text-slate-800">{{ latestByField[u.key]?.value || '—' }}</td>
               <td />
             </tr>
           </tbody>

@@ -61,6 +61,17 @@ export function sanitizeQualitative(v) {
   return /^\+{1,4}$/.test(s) ? s : null
 }
 
+/**
+ * Merge a newly entered lab record into the one already stored for the same date: filled fields win,
+ * empty ones keep the old value (entering lipids later the same day must not erase the HbA1c).
+ */
+export function mergeLabRecord(prev, next) {
+  if (!prev) return next
+  const out = { ...prev }
+  for (const [k, v] of Object.entries(next)) if (v !== '' && v != null) out[k] = v
+  return out
+}
+
 /** Sanitize an array (or object map) of lab records; drops records without a valid date or any valid value. */
 export function sanitizeLabs(labs) {
   const list = Array.isArray(labs) ? labs : labs && typeof labs === 'object' ? Object.values(labs) : []

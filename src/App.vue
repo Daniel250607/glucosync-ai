@@ -57,6 +57,7 @@ import {
   updateCustom,
 } from './data/presets.js'
 import { parseMedications } from './data/healthContextImport.js'
+import { mergeLabRecord } from './data/labContext.js'
 import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_THINKING_BUDGET,
@@ -77,7 +78,8 @@ const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const days = ref({})
 const labs = ref([])
 const loaded = ref(false)
-const today = computed(() => todayKey())
+// A ref, not computed(todayKey()): a computed with no reactive dependency never refreshes after midnight.
+const today = ref(todayKey())
 const selectedDate = ref(todayKey())
 const authUser = ref(null)
 const authBusy = ref(false)
@@ -122,6 +124,15 @@ function nextDay() {
 function resetToToday() {
   selectedDate.value = todayKey()
 }
+
+/** Roll `today` over after midnight; a user who was on "today" follows it to the new day. */
+function refreshToday() {
+  const t = todayKey()
+  if (t === today.value) return
+  if (selectedDate.value === today.value) selectedDate.value = t
+  today.value = t
+}
+let todayTimer = null
 const synced = computed(() => !!(isAuthorized.value && isCloudReady()))
 const syncBadge = computed(() => (synced.value ? '☁️ 已同步' : '💾 本機快取'))
 const userInitials = computed(() => {
@@ -217,6 +228,7 @@ async function resyncFromCloud() {
 }
 function onVisibilityChange() {
   if (document.visibilityState !== 'visible') return
+  refreshToday()
   refreshBackupClock() // an app left open for days re-checks the weekly backup reminder
   resyncFromCloud()
 }
@@ -238,6 +250,7 @@ onMounted(() => {
   document.addEventListener('keydown', onDocKeydown)
   document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('online', resyncFromCloud)
+  todayTimer = setInterval(refreshToday, 60 * 1000)
   ingestQrPairHash()
   pendingPairBanner.value = !!readPendingPair()
   onAuthStateChanged(async (user, meta) => {
@@ -259,6 +272,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocKeydown)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('online', resyncFromCloud)
+  clearInterval(todayTimer)
   destroyQrPairing(true)
 })
 
@@ -303,10 +317,13 @@ async function deleteSelectedDay() {
 }
 
 async function addLab(lab) {
-  labs.value = [...labs.value.filter((l) => l.date !== lab.date), lab].sort((a, b) =>
+  const prev = labs.value.find((l) => l.date === lab.date)
+  const merged = mergeLabRecord(prev, lab)
+  labs.value = [...labs.value.filter((l) => l.date !== lab.date), merged].sort((a, b) =>
     a.date.localeCompare(b.date),
   )
-  await saveLab(lab)
+  await saveLab(merged)
+  if (prev) showToast(`已併入 ${lab.date} 的既有檢驗紀錄`)
 }
 
 function applyProposedTargets(targets) {

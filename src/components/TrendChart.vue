@@ -14,7 +14,7 @@ import {
   Filler,
 } from 'chart.js'
 import { live } from '../data/presets.js'
-import { compliance, dayFlags } from '../data/report.js'
+import { compliance, complianceDefs, dayFlags, windowKeys } from '../data/report.js'
 
 Chart.register(
   BarController,
@@ -44,10 +44,12 @@ const waterSection = ref(null)
 const exerciseSection = ref(null)
 const charts = { macro: null, water: null, exercise: null }
 
-const series = computed(() => {
-  const keys = Object.keys(props.days).sort().slice(-range.value)
-  return keys.map((k) => dayFlags(props.days[k]))
-})
+/** Recorded days inside a calendar window (not "the last N records": a week without logs must not pull in older days). */
+function daysIn(keys) {
+  return keys.filter((k) => Object.prototype.hasOwnProperty.call(props.days, k)).map((k) => dayFlags({ ...props.days[k], date: k }))
+}
+
+const series = computed(() => daysIn(windowKeys(range.value)))
 
 // Per-day logged flags are shared with the clinic report (src/data/report.js).
 
@@ -97,43 +99,10 @@ function exStatus(d, t) {
 }
 
 const scorecards = computed(() => {
-  const keys = Object.keys(props.days).sort()
   const curr = series.value
-  const prev = keys
-    .slice(Math.max(0, keys.length - range.value * 2), Math.max(0, keys.length - range.value))
-    .map((k) => dayFlags(props.days[k]))
-  const t = live.targets
-  const defs = [
-    {
-      id: 'carbs',
-      label: '碳水安全',
-      hint: `${t.carbsMin}–${t.carbsMax} g`,
-      has: (d) => d.meals_analyzed > 0,
-      test: (d) => d.carbs_g >= t.carbsMin && d.carbs_g <= t.carbsMax,
-    },
-    {
-      id: 'sat',
-      label: '飽和脂肪',
-      hint: `≤ ${t.satFatMax} g`,
-      has: (d) => d.meals_analyzed > 0,
-      test: (d) => d.saturated_fat_g <= t.satFatMax,
-    },
-    {
-      id: 'water',
-      label: '飲水',
-      hint: `≥ ${t.hydrationMin} cc`,
-      has: (d) => d.has_water,
-      test: (d) => d.hydration_cc >= t.hydrationMin,
-    },
-    {
-      id: 'ex',
-      label: '運動',
-      hint: `≥ ${t.exerciseTarget} 分`,
-      has: (d) => d.has_exercise,
-      test: (d) => d.exercise_min >= t.exerciseTarget,
-    },
-  ]
-  return defs.map((def) => {
+  // Previous period = the `range` calendar days right before the current window.
+  const prev = daysIn(windowKeys(range.value * 2).slice(0, range.value))
+  return complianceDefs(live.targets).map((def) => {
     const now = compliance(curr, def.test, def.has)
     const before = compliance(prev, def.test, def.has)
     // Compare whenever the previous period has at least one recorded day (day counts may differ).

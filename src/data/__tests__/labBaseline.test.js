@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { applyCustomConfig, getBaselineDate, LAB_FIELDS, MEDICATIONS, medIdFromName } from '../presets.js'
-import { labContextBlock, latestLabSnapshot } from '../labContext.js'
+import { labContextBlock, latestLabSnapshot, mergeLabRecord } from '../labContext.js'
 import { labTrendZh } from '../report.js'
 
 afterEach(() => applyCustomConfig({}))
@@ -39,6 +39,18 @@ describe('lab baseline lives in custom config', () => {
   it('rejects a malformed baseline date', () => {
     applyCustomConfig({ labBaseline: { date: '2026/01/01', values: { hba1c: 9 } } })
     expect(getBaselineDate()).toBe('')
+  })
+})
+
+describe('mergeLabRecord', () => {
+  it('keeps earlier fields of the same date and lets filled new fields win', () => {
+    const prev = { date: '2026-12-01', hba1c: 7, ldl: 120, note: 'a', u_sugar: '+' }
+    const next = { date: '2026-12-01', ldl: 110, tg: 140, note: '', u_sugar: '', u_ketones: '-' }
+    expect(mergeLabRecord(prev, next)).toEqual({ date: '2026-12-01', hba1c: 7, ldl: 110, tg: 140, note: 'a', u_sugar: '+', u_ketones: '-' })
+  })
+  it('returns the new record when there is none for that date', () => {
+    const next = { date: '2026-12-01', hba1c: 7 }
+    expect(mergeLabRecord(undefined, next)).toBe(next)
   })
 })
 

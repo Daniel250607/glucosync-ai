@@ -237,7 +237,7 @@ function addDrinkLog() {
       note: drinkForm.note.trim(),
     })
     if (drinkForm.counts_as_water) {
-      d.hydration_cc = Math.max(0, (d.hydration_cc || 0) + vol)
+      d.hydration_cc = Math.max(0, (Number(d.hydration_cc) || 0) + vol)
     }
   })
   drinkForm.name = ''
@@ -249,7 +249,7 @@ function removeDrinkLog(id) {
     const list = d.drinks || []
     const target = list.find((x) => x.id === id)
     if (target && target.counts_as_water && target.volume_cc) {
-      d.hydration_cc = Math.max(0, (d.hydration_cc || 0) - Number(target.volume_cc))
+      d.hydration_cc = Math.max(0, (Number(d.hydration_cc) || 0) - Number(target.volume_cc))
     }
     d.drinks = list.filter((x) => x.id !== id)
   })
@@ -838,6 +838,7 @@ async function submitMeal(withAI) {
     return
   }
   const id = `${Date.now()}`
+  const date = props.day.date
   const entry = {
     id,
     time: mealTime.value || nowTime(),
@@ -854,7 +855,7 @@ async function submitMeal(withAI) {
     }
     startBusy()
     try {
-      const { date, ...ctx } = summarizeDay(props.day, { beforeTime: entry.time })
+      const { date: _date, ...ctx } = summarizeDay(props.day, { beforeTime: entry.time })
       entry.analysis = await analyzeMeal({
         apiKey,
         mealTime: entry.time,
@@ -872,8 +873,15 @@ async function submitMeal(withAI) {
       return
     }
     stopBusy()
+    // The analysis takes 15-60 s; if another date was selected meanwhile, commit() would write the
+    // meal into THAT day. Keep the form so the user can switch back and send it again.
+    if (props.day.date !== date) {
+      error.value = `分析期間切換了日期，這餐沒有存入。請切回 ${date} 再送出一次。`
+      return
+    }
   }
   commit((d) => {
+    d.meals = d.meals || []
     d.meals.push(entry)
     d.ai_summary = null
     // Auto-sync exercise if meal modifier tag '[餐後踏步 20分]' is checked
@@ -944,6 +952,7 @@ async function runDaySummary() {
     return
   }
   summaryBusy.value = true
+  const date = props.day.date
   try {
     const result = await summarizeDayAI({
       apiKey,
@@ -957,6 +966,10 @@ async function runDaySummary() {
       meds: props.day.meds,
       labs: props.labs,
     })
+    if (props.day.date !== date) {
+      summaryError.value = `總結期間切換了日期，結果沒有存入。請切回 ${date} 再產生一次。`
+      return
+    }
     commit((d) => {
       d.ai_summary = result
     })

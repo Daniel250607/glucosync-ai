@@ -25,7 +25,8 @@ const seriesByField = computed(() => {
   const out = {}
   for (const f of fields) {
     const bd = getBaselineDate()
-    const byDate = new Map(bd && f.baseline != null ? [[bd, { date: bd, value: f.baseline, baseline: true }]] : [])
+    const base = sanitizeLabNumber(f.key, f.baseline)
+    const byDate = new Map(bd && base != null ? [[bd, { date: bd, value: base, baseline: true }]] : [])
     for (const raw of Array.isArray(props.labs) ? props.labs : []) {
       if (!raw || typeof raw !== 'object') continue
       const date = sanitizeLabDate(raw.date)
