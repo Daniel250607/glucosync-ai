@@ -222,7 +222,7 @@ export const live = reactive({
 })
 
 let changeListener = null
-/** Register a callback fired after the user edits (not after applyCustomConfig). */
+/** Register a callback fired after the user edits (not after applyCustomConfig); it receives the edited section names. */
 export function onCustomConfigChange(fn) {
   changeListener = fn
 }
@@ -367,14 +367,15 @@ export function updateCustom(section, value) {
   if (clean === undefined) return
   customConfig[section] = clean
   recompute()
-  if (changeListener) changeListener()
+  if (changeListener) changeListener([section])
 }
 
 /** Restore defaults for the given sections (all sections when omitted). */
 export function resetCustom(sections = SECTIONS) {
-  for (const s of [].concat(sections)) delete customConfig[s]
+  const list = [].concat(sections)
+  for (const s of list) delete customConfig[s]
   recompute()
-  if (changeListener) changeListener()
+  if (changeListener) changeListener(list)
 }
 
 /** Walking-equivalent factor for an exercise type (1 when not configured). */

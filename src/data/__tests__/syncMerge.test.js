@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTombstone, mergeSynced, ts } from '../syncMerge.js'
+import { configNeedsUpload, isTombstone, mergeConfig, mergeSynced, sectionStamps, stampConfig, ts } from '../syncMerge.js'
 
 const D = '2026-09-05'
 
@@ -89,5 +89,43 @@ describe('mergeSynced', () => {
     const r = mergeSynced({ remote: { [D]: { updatedAt: 4 } } })
     expect(r.merged[D].updatedAt).toBe(4)
     expect(r.uploads).toHaveLength(0)
+  })
+})
+
+describe('config per-section merge', () => {
+  it('keeps edits to different sections from two devices', () => {
+    const base = stampConfig({}, { tags: ['a'], targets: { carbsMin: 120 } }, 100)
+    const phone = stampConfig(base, { ...base, tags: ['a', 'b'] }, 200, ['tags'])
+    const pc = stampConfig(base, { ...base, targets: { carbsMin: 130 } }, 300, ['targets'])
+    const merged = mergeConfig(pc, phone)
+    expect(merged.tags).toEqual(['a', 'b'])
+    expect(merged.targets).toEqual({ carbsMin: 130 })
+    expect(merged.section_updated_at).toEqual({ tags: 200, targets: 300 })
+    expect(merged.updated_at).toBe(300)
+    expect(configNeedsUpload(merged, phone)).toBe(true)
+    expect(configNeedsUpload(merged, merged)).toBe(false)
+  })
+  it('a newer reset (section removed) wins over an older copy', () => {
+    const remote = stampConfig({}, { presets: [{ label: 'x' }] }, 100)
+    const local = stampConfig(remote, {}, 200, ['presets'])
+    expect(local.section_updated_at.presets).toBe(200)
+    expect(mergeConfig(local, remote)).not.toHaveProperty('presets')
+  })
+  it('stamps only sections whose value changed when `changed` is omitted', () => {
+    const prev = stampConfig({}, { tags: ['a'], targets: { carbsMin: 120 } }, 100)
+    const next = stampConfig(prev, { tags: ['a'], targets: { carbsMin: 140 } }, 500)
+    expect(next.section_updated_at).toEqual({ tags: 100, targets: 500 })
+  })
+  it('treats legacy payloads (no section stamps) as stamped with updated_at; tie -> remote', () => {
+    const legacy = { tags: ['old'], updated_at: 100 }
+    expect(sectionStamps(legacy)).toEqual({ tags: 100 })
+    expect(mergeConfig({ tags: ['local'], updated_at: 100 }, legacy).tags).toEqual(['old'])
+    expect(mergeConfig({ tags: ['local'], updated_at: 150 }, legacy).tags).toEqual(['local'])
+  })
+  it('ignores __proto__ keys', () => {
+    const evil = JSON.parse('{"__proto__": {"x": 1}, "section_updated_at": {"__proto__": 9}, "updated_at": 5}')
+    const merged = mergeConfig(evil, {})
+    expect(Object.keys(merged.section_updated_at)).toEqual([])
+    expect({}.x).toBeUndefined()
   })
 })

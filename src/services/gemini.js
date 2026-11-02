@@ -206,7 +206,6 @@ const labEvalSchema = {
 }
 
 // ---------- HTTP helpers (retry + readable errors) ----------
-const RETRY_WAITS_MS = [1500, 3000] // up to 2 retries for 503 / 429
 const HTTP_HINT = {
   429: '請求過於頻繁，請稍後再試',
   500: 'Google 伺服器內部錯誤，請稍後再試',
@@ -238,67 +237,80 @@ function formatHttpError(status, detail) {
   return detail ? `[HTTP ${status}] ${hint} — ${detail}` : `[HTTP ${status}] ${hint}`
 }
 
-/** fetch with exponential backoff on 503 / 429 (and network failures). */
-async function fetchWithRetry(url, init) {
-  let lastErr
-  // 針對 503 這種卡死型錯誤，我們只允許重試一次，總嘗試次數改為 2 次
+/** Request timeout (ms) grows with the thinking budget: a high-thinking lab review needs far longer than a quick meal log. */
+export function requestTimeoutMs(thinkingBudget) {
+  const b = normalizeThinkingBudget(thinkingBudget)
+  if (b === 0) return 15000
+  if (b <= 1024) return 25000
+  if (b <= 4096) return 40000
+  return 60000
+}
+
+function timeoutError(timeoutMs) {
+  return new Error(
+    `[HTTP 504] 伺服器回應逾時 (超過 ${Math.round(timeoutMs / 1000)} 秒)，請稍後再試、到設定改用較低的思考等級，或點擊「只記錄」。`,
+  )
+}
+
+/**
+ * POST and parse the JSON response. 503 / 429 / network failures get ONE retry; a timeout is not
+ * retried (a second attempt would most likely time out too). The timeout also covers reading the body.
+ */
+async function postJsonWithRetry(url, init, timeoutMs) {
   const maxAttempts = 2
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    let res
-    // 加入 15 秒 AbortController 強制中斷
+    const isLast = attempt === maxAttempts - 1
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 15000)
-    const fetchInit = Object.assign({}, init, { signal: controller.signal })
-
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      res = await fetch(url, fetchInit)
-      clearTimeout(timeoutId)
-    } catch (e) {
-      clearTimeout(timeoutId)
-      // 如果是被 15 秒強制卡斷的
-      if (e.name === 'AbortError') {
-        lastErr = new Error('[HTTP 504] 伺服器回應逾時 (超過 15 秒)，Google 運算負載過高，請稍後再試或點擊「只記錄」。')
-      } else {
-        lastErr = new Error('網路連線失敗，請檢查網路後再試。')
+      let res
+      try {
+        res = await fetch(url, { ...init, signal: controller.signal })
+      } catch (e) {
+        if (e.name === 'AbortError') throw timeoutError(timeoutMs)
+        if (!isLast) {
+          await sleep(1500)
+          continue
+        }
+        throw new Error('網路連線失敗，請檢查網路後再試。')
       }
-      // 如果還有重試額度，等 1.5 秒再試
-      if (attempt < maxAttempts - 1) {
-        await sleep(1500)
+
+      if (res.ok) {
+        try {
+          return await res.json()
+        } catch (e) {
+          if (e.name === 'AbortError') throw timeoutError(timeoutMs)
+          throw new Error('無法解析 Gemini 回傳的內容。')
+        }
+      }
+
+      const detail = await parseErrorBody(res)
+      if (res.status === 503) {
+        if (!isLast) {
+          await sleep(1500)
+          continue
+        }
+        // Last attempt: fail fast with a friendly message instead of waiting again.
+        throw new Error('[HTTP 503] Google 伺服器目前繁忙，已自動為您保留輸入內容，請稍後再試或點擊「只記錄」。')
+      }
+      if (res.status === 429 && !isLast) {
+        await sleep(2000)
         continue
       }
-      throw lastErr
+      throw new Error(formatHttpError(res.status, detail))
+    } finally {
+      clearTimeout(timeoutId)
     }
-
-    if (res.ok) return res
-
-    const detail = await parseErrorBody(res)
-    lastErr = new Error(formatHttpError(res.status, detail))
-
-    // 遇到 503：若還有額度就重試一次；如果已經是最後一次，立刻拋出友善錯誤，不要空等
-    if (res.status === 503) {
-      if (attempt < maxAttempts - 1) {
-        await sleep(1500)
-        continue
-      }
-      throw new Error('[HTTP 503] Google 伺服器目前繁忙，已自動為您保留輸入內容，請稍後再試或點擊「只記錄」。')
-    }
-
-    // 遇到 429 配額限制，也只套用 1 次重試
-    if (res.status === 429 && attempt < maxAttempts - 1) {
-      await sleep(2000)
-      continue
-    }
-
-    throw lastErr
   }
-  throw lastErr
+  throw new Error('Gemini API 呼叫失敗')
 }
 
 // ---------- Core request ----------
 async function generate({ apiKey, parts, schema, labs = [] }) {
   if (!apiKey) throw new Error('尚未設定 Gemini API Key，請至右上角設定。')
   const model = getGeminiModel()
-  const res = await fetchWithRetry(geminiEndpoint(model), {
+  const thinkingBudget = getThinkingBudget()
+  const data = await postJsonWithRetry(geminiEndpoint(model), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
@@ -309,12 +321,11 @@ async function generate({ apiKey, parts, schema, labs = [] }) {
         responseMimeType: 'application/json',
         responseSchema: schema,
         thinkingConfig: {
-          thinkingBudget: getThinkingBudget(),
+          thinkingBudget,
         },
       },
     }),
-  })
-  const data = await res.json()
+  }, requestTimeoutMs(thinkingBudget))
   const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('')
   if (!text) throw new Error('Gemini 未回傳內容 (可能被安全機制攔截)。')
   try {
@@ -571,6 +582,22 @@ export function clampProposedTargets(raw, current = {}) {
     hydrationMax: Math.round(hydrationMax),
     exerciseTarget: Math.round(exerciseTarget),
   }
+}
+
+/**
+ * Warnings (not errors) for user-entered targets outside the clinical bounds that clampProposedTargets
+ * enforces on AI proposals. The user may still save them, e.g. on the treating physician's advice.
+ */
+export function targetSafetyWarnings(t = {}) {
+  const num = (k) => (t[k] === '' || t[k] == null ? NaN : Number(t[k]))
+  const out = []
+  const carbsMin = num('carbsMin')
+  const carbsMax = num('carbsMax')
+  const satFatMax = num('satFatMax')
+  if (carbsMin < 100) out.push(`碳水最低 ${carbsMin} g 低於 100 g：服用 SGLT-2 抑制劑時碳水過低會增加酮酸中毒 (euDKA) 風險。`)
+  if (carbsMax > 180) out.push(`碳水最高 ${carbsMax} g 高於一般建議的 180 g。`)
+  if (satFatMax > 20) out.push(`飽和脂肪上限 ${satFatMax} g 高於 20 g (LDL-C 控制)。`)
+  return out
 }
 
 /**

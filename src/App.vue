@@ -14,6 +14,7 @@ import {
   decryptJson,
   deleteDay,
   deleteQrPairing,
+  deletedDaysInBackup,
   emptyDay,
   encryptJson,
   ensureFirebaseFromSettings,
@@ -62,6 +63,7 @@ import {
   GEMINI_MODEL_OPTIONS,
   THINKING_LEVEL_OPTIONS,
   normalizeThinkingBudget,
+  targetSafetyWarnings,
 } from './services/gemini.js'
 
 const tabs = [
@@ -170,8 +172,12 @@ function onUserMenuFocusOut(e) {
 }
 
 // Persist every user edit of presets / tags / targets / medications (localStorage + Firestore).
-onCustomConfigChange(() => {
-  if (isAuthorized.value) saveCustomConfig(getCustomConfig())
+// Only the edited sections are stamped; newer sections from another device come back and are applied.
+onCustomConfigChange((sections) => {
+  if (!isAuthorized.value) return
+  saveCustomConfig(getCustomConfig(), sections).then((merged) => {
+    if (merged && authUser.value) applyCustomConfig(merged)
+  })
 })
 
 async function hydrateFromStorage() {
@@ -199,6 +205,9 @@ async function resyncFromCloud() {
     const nextLabs = await loadLabs()
     if (!authUser.value) return
     labs.value = nextLabs
+    const nextConfig = await loadCustomConfig()
+    if (!authUser.value) return
+    applyCustomConfig(nextConfig)
   } catch (err) {
     console.warn('[GlucoSync] resync failed.', err)
   } finally {
@@ -436,6 +445,9 @@ watch(
   },
 )
 
+// Targets outside the clinical safety bounds: shown as a warning, saving stays possible.
+const targetWarnings = computed(() => targetSafetyWarnings(draft.targets))
+
 function loadDraft() {
   draft.targets = { ...live.targets }
   draft.medications = JSON.parse(JSON.stringify(live.medications))
@@ -550,6 +562,16 @@ function submitSettings() {
     settingsError.value = problem
     return
   }
+  // Only the targets the user is changing now need a confirmation (an accepted value is not re-asked).
+  const nums = Object.fromEntries(Object.entries(draft.targets).map(([k, v]) => [k, Number(v)]))
+  const targetsChanged = JSON.stringify(nums) !== JSON.stringify(live.targets)
+  if (
+    targetsChanged &&
+    targetWarnings.value.length &&
+    !window.confirm(`以下目標超出一般安全範圍：\n\n${targetWarnings.value.map((w) => `• ${w}`).join('\n')}\n\n若是醫師的建議可以照常儲存。確定要儲存嗎？`)
+  ) {
+    return
+  }
   const prev = loadSettings()
   saveSettings({
     ...prev,
@@ -560,8 +582,7 @@ function submitSettings() {
     healthContext: settings.healthContext.trim(),
   })
   // Only write an override when something actually differs from the current effective config.
-  const nums = Object.fromEntries(Object.entries(draft.targets).map(([k, v]) => [k, Number(v)]))
-  if (JSON.stringify(nums) !== JSON.stringify(live.targets)) updateCustom('targets', nums)
+  if (targetsChanged) updateCustom('targets', nums)
   const meds = finalizeMedIds(draft.medications)
   if (JSON.stringify(meds) !== JSON.stringify(live.medications)) {
     updateCustom('medications', meds)
@@ -625,16 +646,28 @@ async function importData(e) {
   e.target.value = ''
   if (!file) return
   try {
-    const res = await importBackup(JSON.parse(await file.text()))
+    const data = JSON.parse(await file.text())
+    // Days deleted after this backup was made would come back on every device: ask first.
+    const deleted = deletedDaysInBackup(data)
+    const restoreDeleted =
+      deleted.length > 0 &&
+      window.confirm(
+        `備份裡有 ${deleted.length} 天在備份之後已被刪除：\n${deleted.slice(0, 8).join('、')}${deleted.length > 8 ? ' …' : ''}\n\n` +
+          '按「確定」一併復原這些日子；按「取消」略過它們，只匯入其他資料。',
+      )
+    const res = await importBackup(data, { restoreDeleted })
     if (res.customConfig) {
       applyCustomConfig(res.customConfig)
-      await saveCustomConfig(getCustomConfig())
+      const merged = await saveCustomConfig(getCustomConfig())
+      if (merged) applyCustomConfig(merged)
       loadDraft()
     }
     days.value = await loadDays()
     labs.value = await loadLabs()
     dataMsgOk.value = true
-    dataMsg.value = `已匯入 ${res.days} 天記錄、${res.labs} 筆檢驗${res.customConfig ? '，並還原自訂快選/目標/用藥' : ''}。`
+    dataMsg.value =
+      `已匯入 ${res.days} 天記錄、${res.labs} 筆檢驗${res.customConfig ? '，並還原自訂快選/目標/用藥' : ''}` +
+      `${res.skippedDeleted ? `；略過 ${res.skippedDeleted} 天已刪除的記錄` : ''}。`
   } catch (err) {
     dataMsgOk.value = false
     dataMsg.value = `匯入失敗：${err.message || err}`
@@ -1355,7 +1388,7 @@ const qrCountdownLabel = computed(() => {
         <hr class="my-5 border-slate-200" />
         <h3 class="text-sm font-semibold text-slate-800">資料備份 / 轉移</h3>
         <p class="mt-1 text-xs text-slate-500">
-          匯出每日記錄、檢驗結果與自訂快選/標籤/目標/用藥 (不含 API Key 與 Firebase 設定)；匯入時會合併，同日期以匯入檔為準。
+          匯出每日記錄、檢驗結果與自訂快選/標籤/目標/用藥 (不含 API Key 與 Firebase 設定)；匯入時會合併，同日期以匯入檔為準；備份後已刪除的日子會先詢問是否復原。
         </p>
         <div class="mt-3 grid grid-cols-2 gap-3">
           <button class="rounded-xl bg-slate-100 py-3 text-slate-700 active:bg-slate-200" @click="exportData">
@@ -1401,6 +1434,10 @@ const qrCountdownLabel = computed(() => {
           </label>
         </div>
         <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。</p>
+        <div v-if="targetWarnings.length" class="mt-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert">
+          <p class="font-semibold">⚠️ 超出一般安全範圍（仍可儲存，請依醫師建議）</p>
+          <p v-for="w in targetWarnings" :key="w" class="mt-1">• {{ w }}</p>
+        </div>
 
         <p class="mt-4 text-sm font-medium text-slate-700">用藥清單</p>
         <div class="mt-2 space-y-2">

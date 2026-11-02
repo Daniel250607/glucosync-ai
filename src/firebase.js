@@ -10,7 +10,7 @@ import {
   signOut,
 } from 'firebase/auth'
 import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc } from 'firebase/firestore'
-import { DATE_KEY_RE, mergeSynced, ts } from './data/syncMerge.js'
+import { DATE_KEY_RE, configNeedsUpload, mergeConfig, mergeSynced, stampConfig, ts } from './data/syncMerge.js'
 
 const SETTINGS_KEY = 'glucosync.settings'
 const DAYS_KEY = 'glucosync.days'
@@ -302,35 +302,47 @@ export async function deleteDay(date) {
 
 // ---------- Custom UI configuration (presets, tags, targets, medications) ----------
 // Stored in localStorage under `glucosync.customConfig` and, when Firestore is
-// configured, mirrored to the `config/custom` document. The newer `updated_at` wins.
-export async function loadCustomConfig() {
-  const local = readLocal(CONFIG_KEY)
-  if (!isCloudReady()) return local
-  try {
-    const snap = await getDoc(doc(db, 'config', 'custom'))
-    if (snap.exists()) {
-      const remote = snap.data()
-      if ((remote.updated_at || 0) > (local.updated_at || 0)) {
-        writeLocal(CONFIG_KEY, remote)
-        return remote
-      }
-    }
-    if (local.updated_at) setDoc(doc(db, 'config', 'custom'), local).catch(() => {})
-  } catch (err) {
-    console.warn('[GlucoSync] Firestore config read failed, using local copy.', err)
-  }
-  return local
+// configured, mirrored to the `config/custom` document. Merged section by section
+// (newest `section_updated_at` wins, see data/syncMerge.js), so two devices editing
+// different sections do not overwrite each other.
+
+/** Merge the cloud copy into localStorage and upload when the local copy has newer sections. */
+async function syncCustomConfig() {
+  const snap = await getDoc(doc(db, 'config', 'custom'))
+  const remote = snap.exists() ? snap.data() : {}
+  // Re-read after the round trip so an edit made meanwhile is part of the merge.
+  const merged = mergeConfig(readLocal(CONFIG_KEY), remote)
+  writeLocal(CONFIG_KEY, merged)
+  if (configNeedsUpload(merged, remote)) await setDoc(doc(db, 'config', 'custom'), plain(merged))
+  return merged
 }
 
-/** `cfg` = overrides only (see getCustomConfig in presets.js). Empty object = all defaults. */
-export async function saveCustomConfig(cfg) {
-  const payload = { ...JSON.parse(JSON.stringify(cfg || {})), updated_at: Date.now() }
-  writeLocal(CONFIG_KEY, payload)
-  if (!isCloudReady()) return
+export async function loadCustomConfig() {
+  if (!isCloudReady()) return readLocal(CONFIG_KEY)
   try {
-    await setDoc(doc(db, 'config', 'custom'), payload)
+    return await syncCustomConfig()
   } catch (err) {
-    console.warn('[GlucoSync] Firestore write failed (kept in localStorage).', err)
+    console.warn('[GlucoSync] Firestore config sync failed, using local copy.', err)
+    return readLocal(CONFIG_KEY)
+  }
+}
+
+/**
+ * `cfg` = overrides only (see getCustomConfig in presets.js). Empty object = all defaults.
+ * `changed` = edited / reset section names (omitted: every section that differs is stamped).
+ * Returns the merged config when the cloud copy had newer sections from another device, else null.
+ */
+export async function saveCustomConfig(cfg, changed = null) {
+  const payload = stampConfig(readLocal(CONFIG_KEY), plain(cfg || {}), Date.now(), changed)
+  writeLocal(CONFIG_KEY, payload)
+  if (!isCloudReady()) return null
+  try {
+    // Merge before writing: a plain overwrite would drop sections edited on another device.
+    const merged = await syncCustomConfig()
+    return configNeedsUpload(merged, payload) ? merged : null
+  } catch (err) {
+    console.warn('[GlucoSync] Firestore config write failed (kept in localStorage; uploaded on next sync).', err)
+    return null
   }
 }
 
@@ -347,21 +359,43 @@ export function buildBackup(customConfig = {}) {
   }
 }
 
-/**
- * Merge a backup into storage (imported entries win on the same date).
- * Returns counts plus the raw `customConfig` section (if any) for the caller to apply.
- */
-export async function importBackup(data) {
-  if (!data || data.app !== 'glucosync-ai' || typeof data.days !== 'object') {
+function assertBackup(data) {
+  if (!data || data.app !== 'glucosync-ai' || !data.days || typeof data.days !== 'object') {
     throw new Error('不是有效的 GlucoSync 備份檔。')
   }
+}
+
+/** Dates in a backup that were deleted on this device after the backup's copy was saved (sorted). */
+export function deletedDaysInBackup(data) {
+  assertBackup(data)
+  const tombs = readLocal(DAY_TOMBSTONES_KEY)
+  const out = new Set()
+  for (const d of Object.values(data.days)) {
+    const date = d ? String(d.date || '') : ''
+    if (DATE_KEY_RE.test(date) && ts(tombs[date]) > ts(d.updatedAt)) out.add(date)
+  }
+  return [...out].sort()
+}
+
+/**
+ * Merge a backup into storage (imported entries win on the same date).
+ * Days deleted after the backup was made are skipped unless `restoreDeleted` (saving them would
+ * revive them on every device). Returns counts plus the raw `customConfig` section for the caller.
+ */
+export async function importBackup(data, { restoreDeleted = false } = {}) {
+  assertBackup(data)
+  const skip = new Set(restoreDeleted ? [] : deletedDaysInBackup(data))
   let days = 0
   let labs = 0
-  for (const d of Object.values(data.days || {})) {
-    if (d && d.date) {
-      await saveDay(d)
-      days++
+  let skippedDeleted = 0
+  for (const d of Object.values(data.days)) {
+    if (!d || !d.date) continue
+    if (skip.has(d.date)) {
+      skippedDeleted++
+      continue
     }
+    await saveDay(d)
+    days++
   }
   const labList = Array.isArray(data.labs) ? data.labs : Object.values(data.labs || {})
   for (const l of labList) {
@@ -371,7 +405,7 @@ export async function importBackup(data) {
     }
   }
   const hasConfig = data.customConfig && typeof data.customConfig === 'object'
-  return { days, labs, customConfig: hasConfig ? data.customConfig : null }
+  return { days, labs, skippedDeleted, customConfig: hasConfig ? data.customConfig : null }
 }
 
 // ---------- Lab results ----------

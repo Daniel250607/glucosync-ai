@@ -543,7 +543,14 @@ async function evaluateAllTypes() {
 
 function adoptProfileSuggestion(s) {
   if (s.busy || s.error) return
-  setExerciseProfile(s.type, { mode: s.mode, repsPerMin: s.repsPerMin, met: s.met })
+  const patch = { mode: s.mode, repsPerMin: s.repsPerMin, met: s.met }
+  // Validate everything first so a suggestion is adopted completely or not at all.
+  const problem = exerciseProfileError(patch) || exerciseFactorError(s.factor)
+  if (problem) {
+    exerciseManageError.value = `${s.type}：${problem}`
+    return
+  }
+  setExerciseProfile(s.type, patch)
   setExerciseFactor(s.type, s.factor)
   dismissProfileSuggestion(s)
 }
@@ -558,16 +565,26 @@ function dismissProfileSuggestion(s) {
 
 const MODE_LABEL = { reps: '次數', duration: '時間' }
 
-function setExerciseProfile(t, patch) {
+/** Error message for an invalid profile patch, '' when valid. */
+function exerciseProfileError(patch) {
   if (patch.repsPerMin != null && !(Number(patch.repsPerMin) >= 1 && Number(patch.repsPerMin) <= 200)) {
-    exerciseManageError.value = '每分鐘次數請填 1 ～ 200。'
-    return
+    return '每分鐘次數請填 1 ～ 200。'
   }
   if (patch.met != null && patch.met !== '' && !(Number(patch.met) >= 1 && Number(patch.met) <= 20)) {
-    exerciseManageError.value = 'MET 請填 1 ～ 20（散步約 3.5）。'
-    return
+    return 'MET 請填 1 ～ 20（散步約 3.5）。'
   }
-  exerciseManageError.value = ''
+  return ''
+}
+
+/** Error message for an invalid walking-equivalent factor, '' when valid. */
+function exerciseFactorError(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0.1 && n <= 5 ? '' : '換算係數請填 0.1 ～ 5（1 = 與散步相同）。'
+}
+
+function setExerciseProfile(t, patch) {
+  exerciseManageError.value = exerciseProfileError(patch)
+  if (exerciseManageError.value) return
   const next = { ...(live.exerciseProfiles[t] || {}), ...patch }
   if (patch.met === '') delete next.met // cleared -> estimate from the factor again
   updateCustom('exerciseProfiles', { ...live.exerciseProfiles, [t]: next })
@@ -575,13 +592,9 @@ function setExerciseProfile(t, patch) {
 }
 
 function setExerciseFactor(t, value) {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n < 0.1 || n > 5) {
-    exerciseManageError.value = '換算係數請填 0.1 ～ 5（1 = 與散步相同）。'
-    return
-  }
-  exerciseManageError.value = ''
-  updateCustom('exerciseFactors', { ...live.exerciseFactors, [t]: n })
+  exerciseManageError.value = exerciseFactorError(value)
+  if (exerciseManageError.value) return
+  updateCustom('exerciseFactors', { ...live.exerciseFactors, [t]: Number(value) })
 }
 
 function resetExerciseTypePresets() {

@@ -81,3 +81,77 @@ export function mergeSynced({ local = {}, remote = {}, localTombstones = {}, upl
   }
   return { merged, tombstones, uploads, pushTombstones, removed }
 }
+
+// ---------- Custom config (config/custom): per-section merge ----------
+// The config payload holds override sections (presets, targets, medications, ...) plus
+// `section_updated_at` ({ section: ms }) and `updated_at`. Each section is merged on its own
+// (newest stamp wins, tie -> remote), so edits to different sections on two devices both survive.
+// A removed section (reset to defaults) keeps its stamp, so the reset also wins over older copies.
+// Legacy payloads without `section_updated_at` stamp every present section with `updated_at`.
+
+const CONFIG_META = ['updated_at', 'section_updated_at']
+
+function configSections(cfg) {
+  if (!cfg || typeof cfg !== 'object') return []
+  return Object.keys(cfg).filter((k) => !CONFIG_META.includes(k) && k !== '__proto__')
+}
+
+/** { section: ms } for a config payload (see above for legacy payloads). */
+export function sectionStamps(cfg) {
+  const out = {}
+  if (!cfg || typeof cfg !== 'object') return out
+  const own = cfg.section_updated_at && typeof cfg.section_updated_at === 'object' ? cfg.section_updated_at : {}
+  for (const k of Object.keys(own)) {
+    if (k !== '__proto__' && ts(own[k])) out[k] = ts(own[k])
+  }
+  const fallback = ts(cfg.updated_at)
+  for (const k of configSections(cfg)) {
+    if (!out[k] && fallback) out[k] = fallback
+  }
+  return out
+}
+
+/**
+ * Payload to store after an edit. `changed` = sections the user just edited or reset (stamped `now`);
+ * when omitted (e.g. a backup import) every section whose value differs from `prev` is stamped.
+ */
+export function stampConfig(prev, next, now, changed = null) {
+  const prevStamps = sectionStamps(prev)
+  const stamps = {}
+  const keys = new Set([...configSections(prev), ...configSections(next), ...Object.keys(prevStamps)])
+  for (const k of keys) {
+    const touched = changed ? changed.includes(k) : JSON.stringify(prev?.[k]) !== JSON.stringify(next?.[k])
+    const t = touched ? now : prevStamps[k] || 0
+    if (t) stamps[k] = t
+  }
+  const out = {}
+  for (const k of configSections(next)) out[k] = next[k]
+  out.section_updated_at = stamps
+  out.updated_at = Math.max(0, ...Object.values(stamps))
+  return out
+}
+
+/** Merge local and remote config payloads section by section. */
+export function mergeConfig(local = {}, remote = {}) {
+  const lS = sectionStamps(local)
+  const rS = sectionStamps(remote)
+  const keys = new Set([...configSections(local), ...configSections(remote), ...Object.keys(lS), ...Object.keys(rS)])
+  const out = {}
+  const stamps = {}
+  for (const k of keys) {
+    const l = lS[k] || 0
+    const r = rS[k] || 0
+    const src = l > r ? local : remote
+    if (src && src[k] !== undefined) out[k] = src[k]
+    if (Math.max(l, r)) stamps[k] = Math.max(l, r)
+  }
+  out.section_updated_at = stamps
+  out.updated_at = Math.max(0, ...Object.values(stamps))
+  return out
+}
+
+/** True when `merged` has a section newer than the remote copy (i.e. the cloud must be updated). */
+export function configNeedsUpload(merged, remote) {
+  const rS = sectionStamps(remote)
+  return Object.entries(sectionStamps(merged)).some(([k, t]) => t > (rS[k] || 0))
+}
