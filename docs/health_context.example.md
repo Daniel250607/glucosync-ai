@@ -8,13 +8,27 @@
 - HbA1c: <value> %
 
 ## Lipids
-- TG / T-Cho / LDL-C / HDL-C: <values>
+<!-- One item per line ("- Label: value"); the baseline import cannot read combined lines. -->
+- TG: <value> mg/dL
+- T-Cho: <value> mg/dL
+- LDL-C: <value> mg/dL
+- HDL-C: <value> mg/dL
 
 ## Renal & Urine
-- U-Sugar, U-Ketones, Micro-Albumin, UAcr, Creatinine, eGFR, BUN, Uric Acid: <values>
+- U-Sugar: <- / ± / + / ++ / +++ / ++++>
+- U-Ketones: <- / ± / + / ++ / +++ / ++++>
+- U-Specific Gravity: <value>
+- Micro-Albumin: <value> mg/L
+- UAcr: <value>
+- Creatinine: <value> mg/dL
+- eGFR: <value>
+- BUN: <value> mg/dL
+- Uric Acid: <value> mg/dL
+- S-GPT: <value> U/L
 
 ## Medications
-- <name dose frequency>
+<!-- "- Name (Generic) 500 mg BID"; frequency QD / BID / TID / QN / HS -->
+- <name> <dose> mg <frequency>
 
 ## Daily Targets
 - Hydration: <range> cc

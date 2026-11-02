@@ -123,15 +123,17 @@ export function latestLabSnapshot(labs) {
   const rows = []
   for (const f of LAB_FIELDS) {
     const p = pick(f.key)
-    if (!p && f.baseline == null) continue // nothing known for this field yet
-    const value = p ? p.value : f.baseline
+    // The baseline comes from the custom config (user input / Firestore / backup): same range check as follow-ups.
+    const baseline = sanitizeLabNumber(f.key, f.baseline)
+    if (!p && baseline == null) continue // nothing known for this field yet
+    const value = p ? p.value : baseline
     rows.push({
       key: f.key, label: f.label, unit: f.unit || '', kind: 'numeric',
-      baseline: f.baseline, baselineDate: getBaselineDate(),
+      baseline, baselineDate: getBaselineDate(),
       latest: value, latestDate: p ? p.date : getBaselineDate(), source: p ? 'follow-up' : 'baseline',
       targetLabel: f.targetLabel && f.targetLabel !== '—' ? f.targetLabel : null,
       status: numericStatus(f, value),
-      ...(p ? numericTrend(f, value, f.baseline) : { delta: 0, pct: 0, trend: 'no follow-up yet' }),
+      ...(p ? numericTrend(f, value, baseline) : { delta: 0, pct: 0, trend: 'no follow-up yet' }),
     })
   }
   for (const q of URINE_QUALITATIVE) {

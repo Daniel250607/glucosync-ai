@@ -41,6 +41,9 @@ describe('parseBaselineLabs', () => {
     expect(parseBaselineLabs('')).toEqual({ date: '', values: {} })
     expect(parseBaselineLabs(SAMPLE.replace(/\n/g, '\r\n')).values.hba1c).toBe(5.5)
   })
+  it('reads a value with the unit attached', () => {
+    expect(parseBaselineLabs('## Glycemic\n- HbA1c: 5.5%\n- AC Sugar: 99mg/dL').values).toEqual({ hba1c: 5.5, ac_sugar: 99 })
+  })
   it('rejects invalid qualitative values', () => {
     expect(parseBaselineLabs('## Renal\n- U-Sugar: lots').values).toEqual({})
   })

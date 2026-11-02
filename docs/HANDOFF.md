@@ -5,9 +5,17 @@
 ## 目前狀態
 
 - `main` 已 push，GitHub Pages 自動部署。
-- 測試 48 個全部通過，`npm run build` 成功。
+- 測試 50 個全部通過，`npm run build` 成功。
 
-## 2026-11-02 完成的事
+## 2026-11-02 家裡完成的事
+
+- 檢查 `healthContextImport.js`、`labContext.js`，修正：
+  - 匯入的藥物沒有換成用藥名產生的 id（匯入時的 id 格式 `finalizeMedIds` 認不得），同名藥重新輸入時對不回舊的服藥紀錄。之前已匯入的藥 id 維持不變。
+  - `health_context.example.md` 改成一行一項；原本合併在同一行的寫法，基準值匯入讀不到。
+  - 數值後面直接接單位（例如 `5.5%`）也能讀到。
+  - 送進 AI 的基準值和追蹤值一樣，要先通過合理範圍檢查。
+
+## 2026-11-02 公司完成的事
 
 - 程式碼檢查：涵蓋程式邏輯、安全性與語法，主要看 `firebase.js`、`gemini.js`、`App.vue` 的設定與配對、`presets.js`、`syncMerge.js` 和 `DailyTracker.vue` 的運動段落。
 - 手機配對：開啟配對連結後要先確認才會套用；換成另一個 Firebase 專案時，會標出新、舊專案名稱。離線 QR Code 產生前會先警告。
@@ -21,9 +29,9 @@
 
 ## 待辦
 
-- [ ] 上線後在瀏覽器實際測試：配對確認視窗、目標警告、兩台裝置的設定同步、匯入時的刪除詢問。
+- [ ] 上線後在瀏覽器實際測試：配對確認視窗、目標警告、兩台裝置的設定同步、匯入時的刪除詢問、從檔案匯入藥物後儲存（id 應變成藥名）。
 - [ ] 使用者端：金鑰與 Firebase Console 設定的檢查（使用者已知道細節）。
-- [ ] 還沒檢查的檔案：`healthContextImport.js`、`labContext.js`、`report.js`、`sickDay.js`、圖表元件、`LabMilestones.vue`、`ClinicReport.vue`、`App.vue` 的其餘部分。建議先看前兩個，它們會決定哪些內容送進 AI。
+- [ ] 還沒檢查的檔案：`report.js`、`sickDay.js`、圖表元件、`LabMilestones.vue`、`ClinicReport.vue`、`App.vue` 的其餘部分。建議先看 `report.js`、`sickDay.js`。
 
 ## 已做的決定
 

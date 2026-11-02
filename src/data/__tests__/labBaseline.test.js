@@ -29,6 +29,11 @@ describe('lab baseline lives in custom config', () => {
     expect(rows[0].baseline).toBe(9)
   })
 
+  it('drops a baseline outside the plausible range from the prompt rows', () => {
+    applyCustomConfig({ labBaseline: { date: '2026-01-01', values: { hba1c: 90, ldl: 120 } } })
+    expect(latestLabSnapshot([]).map((r) => r.key)).toEqual(['ldl'])
+  })
+
   it('rejects a malformed baseline date', () => {
     applyCustomConfig({ labBaseline: { date: '2026/01/01', values: { hba1c: 9 } } })
     expect(getBaselineDate()).toBe('')

@@ -480,7 +480,8 @@ async function importMedsFile(event) {
   let added = 0
   for (const m of meds) {
     if (have.has(m.name.toLowerCase())) continue
-    draft.medications.push({ id: `med-${Date.now()}-${added}`, ...m })
+    // `med-<digits>` so finalizeMedIds replaces it with the name-derived id on save.
+    draft.medications.push({ id: `med-${Date.now() + added}`, ...m })
     added++
   }
   importMsg.value = `已加入 ${added} 筆藥物（重複的已略過），請檢查早晚設定後按「儲存」。`

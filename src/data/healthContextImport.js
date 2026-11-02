@@ -56,8 +56,9 @@ export function parseBaselineLabs(text) {
     if (QUALITATIVE.has(key)) {
       if (/^(-|±|\+{1,4})$/.test(m[2])) values[key] = m[2]
     } else {
-      const n = Number(m[2])
-      if (Number.isFinite(n)) values[key] = n
+      // Leading number only, so a unit written without a space ("6.8%", "110mg/dL") still parses.
+      const num = m[2].match(/^\d+(?:\.\d+)?/)
+      if (num) values[key] = Number(num[0])
     }
   }
   return { date, values }
