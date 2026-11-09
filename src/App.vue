@@ -51,10 +51,15 @@ import {
   getCustomConfig,
   hydrationRangeFromWeight,
   live,
+  HEIGHT_LIMITS,
+  WEIGHT_LIMITS,
   medIdFromName,
   onCustomConfigChange,
+  recordWeight,
   resetCustom,
+  sanitizeWeight,
   updateCustom,
+  weightRangeFromHeight,
 } from './data/presets.js'
 import { parseMedications } from './data/healthContextImport.js'
 import { mergeLabRecord } from './data/labContext.js'
@@ -447,7 +452,8 @@ const TARGET_FIELDS = [
   { label: '碳水 最高 (g)', key: 'carbsMax' },
   { label: '飽和脂肪 警示 (g)', key: 'satFatMin' },
   { label: '飽和脂肪 上限 (g)', key: 'satFatMax' },
-  { label: '體重 (kg)', key: 'userWeight' },
+  { label: '目前體重 (kg)', key: 'userWeight' },
+  { label: '身高 (cm，0＝未設定)', key: 'userHeight' },
   { label: '飲水 下限 (cc)', key: 'hydrationMin', readonly: true },
   { label: '飲水 上限 (cc)', key: 'hydrationMax', readonly: true },
   { label: '運動目標 (分)', key: 'exerciseTarget' },
@@ -464,6 +470,7 @@ watch(
 
 // Targets outside the clinical safety bounds: shown as a warning, saving stays possible.
 const targetWarnings = computed(() => targetSafetyWarnings(draft.targets))
+const draftWeightRange = computed(() => weightRangeFromHeight(draft.targets.userHeight))
 
 function loadDraft() {
   draft.targets = { ...live.targets }
@@ -559,7 +566,8 @@ function validateDraft() {
   }
   if (Number(t.carbsMin) > Number(t.carbsMax)) return '碳水最低值不可大於最高值。'
   if (Number(t.satFatMin) > Number(t.satFatMax)) return '飽和脂肪警示值不可大於上限。'
-  if (!(Number(t.userWeight) > 0)) return '體重必須大於 0 kg。'
+  if (sanitizeWeight(t.userWeight) == null) return `體重必須在 ${WEIGHT_LIMITS[0]}–${WEIGHT_LIMITS[1]} kg 之間。`
+  if (Number(t.userHeight) !== 0 && !weightRangeFromHeight(t.userHeight)) return `身高請填 ${HEIGHT_LIMITS[0]}–${HEIGHT_LIMITS[1]} cm，或填 0 表示不設定。`
   if (Number(t.hydrationMin) > Number(t.hydrationMax)) return '飲水下限不可大於上限。'
   if (draft.medications.some((m) => !m.name.trim())) return '藥物名稱不可空白 (不需要的請刪除)。'
   return ''
@@ -600,7 +608,10 @@ function submitSettings() {
     healthContext: settings.healthContext.trim(),
   })
   // Only write an override when something actually differs from the current effective config.
+  const weightChanged = nums.userWeight !== Number(live.targets.userWeight)
   if (targetsChanged) updateCustom('targets', nums)
+  // A weight typed here is today's measurement: it goes into the weight log (chart + latest weight).
+  if (weightChanged) recordWeight(todayKey(), nums.userWeight)
   const meds = finalizeMedIds(draft.medications)
   if (JSON.stringify(meds) !== JSON.stringify(live.medications)) {
     updateCustom('medications', meds)
@@ -1452,6 +1463,13 @@ const qrCountdownLabel = computed(() => {
           </label>
         </div>
         <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。</p>
+        <p class="mt-1 text-xs text-slate-500" data-testid="settings-weight-range">
+          <template v-if="draftWeightRange">
+            依身高 {{ draft.targets.userHeight }} cm：標準體重範圍 {{ draftWeightRange.min }}–{{ draftWeightRange.max }} kg（BMI 18.5–24），理想體重 {{ draftWeightRange.ideal }} kg。
+          </template>
+          <template v-else>填寫身高後，檢驗頁的體重趨勢圖會標出標準體重範圍。</template>
+          在這裡修改體重會記成今天的體重；其他日期請在「今日記錄」切換日期後填寫。
+        </p>
         <div v-if="targetWarnings.length" class="mt-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert">
           <p class="font-semibold">⚠️ 超出一般安全範圍（仍可儲存，請依醫師建議）</p>
           <p v-for="w in targetWarnings" :key="w" class="mt-1">• {{ w }}</p>

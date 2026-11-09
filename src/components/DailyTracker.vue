@@ -7,7 +7,9 @@ import {
   live,
   medsForSlot,
   medLabel,
+  recordWeight,
   repsToMinutes,
+  WEIGHT_LIMITS,
   updateCustom,
   resetCustom,
 } from '../data/presets.js'
@@ -30,6 +32,14 @@ function commit(mutator) {
   const next = clone(props.day)
   mutator(next)
   emit('update', next)
+}
+/** Weight field: records the weight for the viewed date; clearing it removes that day's entry. */
+function onWeightChange(e) {
+  const raw = String(e.target.value ?? '').trim()
+  if (!recordWeight(props.day.date, raw)) {
+    showToast(`體重請輸入 ${WEIGHT_LIMITS[0]}–${WEIGHT_LIMITS[1]} kg 之間的數字。`)
+    e.target.value = live.weightLog[props.day.date] ?? ''
+  }
 }
 function nowTime() {
   return new Date().toTimeString().slice(0, 5)
@@ -1092,17 +1102,19 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         <div>
           <div class="flex items-center gap-2">
             <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
-            <label class="flex items-center text-xs text-slate-500">
+            <label class="flex items-center text-xs text-slate-500" :title="`記錄 ${day.date} 的體重（不用每天記）；空白時飲水範圍沿用最近一次 ${live.targets.userWeight} kg`">
               ⚖️ 體重
               <input
                 type="number"
                 min="20"
-                max="250"
-                step="0.5"
+                max="300"
+                step="0.1"
                 inputmode="decimal"
-                v-model.lazy="live.targets.userWeight"
-                @change="updateCustom('targets', live.targets)"
-                class="mx-1 w-14 rounded border border-slate-300 bg-slate-50 p-0.5 text-center text-xs text-slate-800 focus:bg-white"
+                :value="live.weightLog[day.date] ?? ''"
+                :placeholder="String(live.targets.userWeight)"
+                data-testid="day-weight"
+                @change="onWeightChange"
+                class="mx-1 w-14 rounded border border-slate-300 bg-slate-50 p-0.5 text-center text-xs text-slate-800 placeholder:text-slate-400 focus:bg-white"
               />
               kg
             </label>

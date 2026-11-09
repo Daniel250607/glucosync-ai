@@ -6,6 +6,8 @@ import { reactive } from 'vue'
 export const TARGETS = {
   // Body weight (kg) drives the hydration band. 70 kg → 2100–2660 cc.
   userWeight: 70,
+  // Height (cm) for the standard weight range (BMI 18.5-24). 0 = not set.
+  userHeight: 0,
   hydrationMin: 2100,
   hydrationMax: 2660,
   // Post-dinner marching-in-place target duration (min).
@@ -205,7 +207,7 @@ export function getBaselineDate() {
 // that all components read from.
 // =====================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o))
-const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'exerciseFactors', 'exerciseProfiles', 'drinkPresets', 'medications', 'targets', 'labBaseline']
+const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'exerciseFactors', 'exerciseProfiles', 'drinkPresets', 'medications', 'targets', 'labBaseline', 'weightLog']
 const TIMINGS = ['morning', 'evening', 'both']
 
 export const customConfig = reactive({})
@@ -219,6 +221,7 @@ export const live = reactive({
   medications: clone(MEDICATIONS),
   targets: { ...TARGETS },
   labBaseline: { date: '', values: {} },
+  weightLog: {}, // { 'YYYY-MM-DD': kg } — recorded on any day (irregular); the latest entry drives targets.userWeight
 })
 
 let changeListener = null
@@ -239,6 +242,62 @@ export function hydrationRangeFromWeight(weightKg) {
   return { userWeight: weight, hydrationMin, hydrationMax }
 }
 
+/** Plausible adult body weight (kg) and height (cm); values outside are treated as typos. */
+export const WEIGHT_LIMITS = [20, 300]
+export const HEIGHT_LIMITS = [100, 250]
+/** Adult BMI bands used in Taiwan (Health Promotion Administration): normal 18.5-24, ideal 22. */
+export const BMI_NORMAL = [18.5, 24]
+export const BMI_IDEAL = 22
+
+const round1 = (n) => Math.round(n * 10) / 10
+
+/** Weight in kg rounded to 0.1, or null when missing / outside WEIGHT_LIMITS. */
+export function sanitizeWeight(v) {
+  if (v === '' || v == null || typeof v === 'boolean') return null
+  const n = Number(v)
+  return Number.isFinite(n) && n >= WEIGHT_LIMITS[0] && n <= WEIGHT_LIMITS[1] ? round1(n) : null
+}
+
+/** Standard weight range for a height in cm (BMI 18.5-24, ideal BMI 22); null when the height is not set / invalid. */
+export function weightRangeFromHeight(heightCm) {
+  const h = Number(heightCm)
+  if (!Number.isFinite(h) || h < HEIGHT_LIMITS[0] || h > HEIGHT_LIMITS[1]) return null
+  const m2 = (h / 100) ** 2
+  return { min: round1(BMI_NORMAL[0] * m2), max: round1(BMI_NORMAL[1] * m2), ideal: round1(BMI_IDEAL * m2) }
+}
+
+/** BMI (1 decimal) or null when weight / height are not usable. */
+export function bmiOf(weightKg, heightCm) {
+  const w = sanitizeWeight(weightKg)
+  const h = Number(heightCm)
+  if (w == null || !Number.isFinite(h) || h < HEIGHT_LIMITS[0] || h > HEIGHT_LIMITS[1]) return null
+  return round1(w / (h / 100) ** 2)
+}
+
+/** Weight log as a date-sorted list [{ date, kg }]. */
+export function weightEntries(log = live.weightLog) {
+  return Object.entries(log || {})
+    .map(([date, kg]) => ({ date, kg }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/**
+ * Record (or with kg empty/null: remove) the weight for one date. Returns false when the value is invalid.
+ * The latest entry automatically becomes targets.userWeight (hydration band, calorie estimate, AI prompts).
+ */
+export function recordWeight(date, kg) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return false
+  const next = { ...(customConfig.weightLog || {}) }
+  if (kg === '' || kg == null) delete next[date]
+  else {
+    const w = sanitizeWeight(kg)
+    if (w == null) return false
+    next[date] = w
+  }
+  updateCustom('weightLog', next)
+  return true
+}
+
 function recompute() {
   live.presets = clone(customConfig.presets ?? PRESETS)
   live.tags = clone(customConfig.tags ?? TAGS)
@@ -249,7 +308,11 @@ function recompute() {
   live.exerciseProfiles = profiles
   live.drinkPresets = clone(customConfig.drinkPresets ?? DRINK_PRESETS)
   live.medications = clone(customConfig.medications ?? MEDICATIONS)
+  live.weightLog = { ...(customConfig.weightLog ?? {}) }
   const merged = { ...TARGETS, ...(customConfig.targets ?? {}) }
+  // The most recent logged weight overrides the stored setting, so every weight consumer follows the log.
+  const entries = weightEntries(live.weightLog)
+  if (entries.length) merged.userWeight = entries[entries.length - 1].kg
   live.targets = { ...merged, ...hydrationRangeFromWeight(merged.userWeight) }
   live.labBaseline = clone(customConfig.labBaseline ?? { date: '', values: {} })
 }
@@ -344,6 +407,14 @@ export function sanitizeCustomConfig(cfg) {
       if (typeof src[q.key] === 'string' && /^(-|±|\+{1,4})$/.test(src[q.key])) values[q.key] = src[q.key]
     }
     out.labBaseline = { date, values }
+  }
+  if (cfg.weightLog && typeof cfg.weightLog === 'object' && !Array.isArray(cfg.weightLog)) {
+    const log = {}
+    for (const [date, kg] of Object.entries(cfg.weightLog)) {
+      const w = sanitizeWeight(kg)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && w != null) log[date] = w
+    }
+    out.weightLog = log
   }
   return out
 }

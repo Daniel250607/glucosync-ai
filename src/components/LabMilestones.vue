@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, getBaselineDate, hydrationRangeFromWeight, live, updateCustom, resetCustom } from '../data/presets.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getGeminiKey, todayKey } from '../firebase.js'
 import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
@@ -17,6 +17,8 @@ const emit = defineEmits(['add-lab', 'open-settings', 'apply-targets'])
 const showToast = inject('showToast', () => {})
 
 const reportOpen = ref(false)
+// Computed (not inline in the template) so typing in the forms does not re-create the trend charts.
+const weightList = computed(() => weightEntries(live.weightLog))
 
 const latest = computed(() => (props.labs.length ? props.labs[props.labs.length - 1] : null))
 /** Most recent value per field (a follow-up may cover only some fields), same as the report and AI prompts. */
@@ -59,7 +61,7 @@ function implausibleFields(values) {
 
 // ---------- form ----------
 const today = todayKey()
-const form = reactive({ date: today, u_sugar: '', u_ketones: '', note: '' })
+const form = reactive({ date: today, u_sugar: '', u_ketones: '', note: '', weight: '' })
 for (const f of LAB_FIELDS) form[f.key] = ''
 const formError = ref('')
 
@@ -86,6 +88,11 @@ function submit() {
     formError.value = `數值超出合理範圍，請確認：${bad.join('、')}`
     return
   }
+  const weightRaw = String(form.weight ?? '').trim()
+  if (weightRaw && sanitizeWeight(weightRaw) == null) {
+    formError.value = `體重請輸入 ${WEIGHT_LIMITS[0]}–${WEIGHT_LIMITS[1]} kg 之間的數字。`
+    return
+  }
   const lab = { date: form.date, note: form.note || '', u_sugar: qual.u_sugar || '', u_ketones: qual.u_ketones || '' }
   let count = 0
   for (const f of LAB_FIELDS) {
@@ -94,13 +101,17 @@ function submit() {
       count++
     }
   }
-  if (!count && !qual.u_sugar && !qual.u_ketones) {
-    formError.value = '請至少填寫一項檢驗數值。'
+  const hasLab = count || qual.u_sugar || qual.u_ketones
+  if (!hasLab && !weightRaw) {
+    formError.value = '請至少填寫一項檢驗數值或體重。'
     return
   }
-  emit('add-lab', lab)
+  // Weight goes into the shared weight log (same as the daily tracker), dated on the lab date.
+  if (weightRaw) recordWeight(form.date, weightRaw)
+  if (hasLab) emit('add-lab', lab)
+  else showToast(`已記錄 ${form.date} 的體重`)
   for (const f of LAB_FIELDS) form[f.key] = ''
-  form.u_sugar = form.u_ketones = form.note = ''
+  form.u_sugar = form.u_ketones = form.note = form.weight = ''
 }
 
 // ---------- baseline (personal values live in the custom config, never in the code) ----------
@@ -317,7 +328,7 @@ async function runEvaluation() {
     </section>
 
     <!-- Lab trend charts -->
-    <LabTrendChart :labs="labs" />
+    <LabTrendChart :labs="labs" :weights="weightList" :height-cm="Number(live.targets.userHeight) || 0" />
 
     <!-- Entry form -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -348,6 +359,10 @@ async function runEvaluation() {
         <label class="text-xs text-slate-500">
           U-Ketones
           <input v-model="form.u_ketones" placeholder="例如 -" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+        </label>
+        <label class="text-xs text-slate-500">
+          體重 kg（選填）
+          <input v-model="form.weight" type="number" step="0.1" inputmode="decimal" data-testid="lab-form-weight" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
         </label>
         <label class="col-span-2 text-xs text-slate-500 sm:col-span-3">
           備註
