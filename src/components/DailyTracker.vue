@@ -13,9 +13,10 @@ import {
   updateCustom,
   resetCustom,
 } from '../data/presets.js'
-import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, suggestExerciseProfile, summarizeDay, summarizeDayAI } from '../services/gemini.js'
-import { getGeminiKey } from '../firebase.js'
+import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, mealsForSummary, suggestExerciseProfile, summarizeDay, summarizeDayAI } from '../services/gemini.js'
+import { getGeminiKey, todayKey } from '../firebase.js'
 import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
+import { changeWater, lastWaterTime, minutesBetween, removeWaterLog, undoWaterChange, untimedWaterCc, waterLogs } from '../data/waterLog.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
 
 const props = defineProps({
@@ -152,21 +153,40 @@ const hydrationPattern = ref('')
 const hydrationAdviceLoading = ref(false)
 const hydrationAdviceError = ref('')
 
+// Pure-water timeline (time = when the button was pressed).
+const waterTimeline = computed(() => waterLogs(props.day))
+const untimedWater = computed(() => untimedWaterCc(props.day))
+const lastWater = computed(() => lastWaterTime(props.day))
+const clockNow = ref(nowTime())
+const clockTimer = setInterval(() => {
+  clockNow.value = nowTime()
+}, 60000)
+onBeforeUnmount(() => clearInterval(clockTimer))
+/** "2 小時 10 分前" for today only; '' for other dates. */
+const lastWaterAgo = computed(() => {
+  if (props.day.date !== todayKey()) return ''
+  const mins = minutesBetween(lastWater.value, clockNow.value)
+  if (mins == null) return ''
+  if (mins < 1) return '剛剛'
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return h ? `${h} 小時${m ? ` ${m} 分` : ''}前` : `${m} 分前`
+})
+
 function addWater(cc) {
-  let applied = 0
+  let result = { applied: 0 }
   commit((d) => {
-    const before = Math.max(0, Number(d.hydration_cc) || 0)
-    d.hydration_cc = Math.max(0, before + cc)
-    applied = d.hydration_cc - before // actual change after clamping at 0
+    result = changeWater(d, cc, nowTime())
   })
+  const applied = result.applied
   if (!applied) return
   offerUndo(applied > 0 ? `已記錄 純水 +${applied}cc` : `已扣除 純水 ${applied}cc`, () => {
-    commit((d) => {
-      const cur = Math.max(0, Number(d.hydration_cc) || 0)
-      // Reverse exactly the applied amount (never below 0 if the value changed meanwhile).
-      d.hydration_cc = Math.max(0, cur - applied)
-    })
+    commit((d) => undoWaterChange(d, result))
   })
+}
+
+function deleteWaterLog(id) {
+  commit((d) => removeWaterLog(d, id))
 }
 
 const waterInputCc = ref(300)
@@ -198,6 +218,8 @@ async function askHydrationSchedule() {
       targetMin: TARGETS.value.hydrationMin,
       targetMax: TARGETS.value.hydrationMax,
       drinks: drinks.value,
+      waterLogs: waterTimeline.value,
+      untimedWater: untimedWater.value,
       currentTime: nowTime(),
       labs: props.labs,
       sick: props.day.sick || null,
@@ -967,12 +989,7 @@ async function runDaySummary() {
     const result = await summarizeDayAI({
       apiKey,
       totals: summarizeDay(props.day),
-      meals: sortMealsByTime(props.day.meals).map((m) => ({
-        time: m.time,
-        name: m.analysis?.meal_name || m.text,
-        tags: m.tags,
-        analyzed: !!m.analysis,
-      })),
+      meals: mealsForSummary(sortMealsByTime(props.day.meals)),
       meds: props.day.meds,
       labs: props.labs,
     })
@@ -1125,6 +1142,10 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <p class="mt-0.5 text-xs text-slate-500">
             總液體 {{ totalFluidCc }} cc · 純水 {{ pureWaterCc }} cc · 飲品 {{ drinksTotalCc }} cc
           </p>
+          <p class="mt-0.5 text-xs text-sky-700" data-testid="last-water">
+            <template v-if="lastWater">上次喝水 {{ lastWater }}<span v-if="lastWaterAgo">（{{ lastWaterAgo }}）</span></template>
+            <template v-else>還沒有記錄喝水時間</template>
+          </p>
         </div>
         <button
           class="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium"
@@ -1175,6 +1196,26 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <button type="button" class="rounded-xl bg-slate-100 py-2.5 text-sm text-slate-600 active:bg-slate-200" @click="addWater(-100)">−100cc</button>
         </div>
         <p v-if="waterError" class="text-xs text-rose-600">{{ waterError }}</p>
+      </div>
+
+      <!-- Pure-water timeline -->
+      <div v-if="waterTimeline.length || untimedWater" class="mt-3 border-t border-slate-100 pt-2.5">
+        <p class="text-xs font-medium text-slate-400">今日喝水時間</p>
+        <ul class="mt-1 divide-y divide-slate-100">
+          <li v-if="untimedWater" class="flex items-center gap-2 py-1.5 text-sm">
+            <span class="text-xs text-slate-400">先前</span>
+            <span class="flex-1 text-xs text-slate-500">{{ untimedWater }}cc（沒有記錄時間）</span>
+          </li>
+          <li v-for="w in waterTimeline" :key="w.id" class="flex items-center gap-2 py-1.5 text-sm">
+            <span class="text-xs text-slate-400">{{ w.time || '—' }}</span>
+            <span class="flex-1 text-sky-700">💧 純水 {{ w.cc }}cc</span>
+            <button
+              class="px-2 text-slate-300 active:text-rose-500"
+              :aria-label="`刪除 ${w.time} 純水 ${w.cc}cc`"
+              @click="deleteWaterLog(w.id)"
+            >✕</button>
+          </li>
+        </ul>
       </div>
 
       <div class="mt-3">
@@ -1981,6 +2022,22 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         纖維 {{ mealToShow.analysis.macronutrients.dietary_fiber_g }}g ·
         鈉 {{ mealToShow.analysis.macronutrients.sodium_mg }}mg
       </p>
+      <p v-if="mealToShow.text" class="mt-2 whitespace-pre-line rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+        📝 {{ mealToShow.text }}
+      </p>
+      <div v-if="mealToShow.analysis.items?.length" class="mt-2">
+        <p class="text-xs font-medium text-slate-400">品項與份量（依進食順序）</p>
+        <ol class="mt-1 space-y-0.5 text-sm text-slate-700">
+          <li v-for="(it, i) in mealToShow.analysis.items" :key="i" class="flex gap-2">
+            <span class="w-4 shrink-0 text-right text-xs text-slate-400">{{ i + 1 }}</span>
+            <span class="min-w-0 flex-1">{{ it.name }}</span>
+            <span class="shrink-0 text-xs text-slate-500">{{ it.portion }}</span>
+          </li>
+        </ol>
+      </div>
+      <p v-if="mealToShow.analysis.eating_order_feedback" class="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        🥗→🍗→🍚 {{ mealToShow.analysis.eating_order_feedback }}
+      </p>
       <div class="mt-3 grid gap-2 sm:grid-cols-2">
         <div
           v-for="a in ALERTS"
@@ -2017,6 +2074,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <span class="mt-0.5 text-xs text-slate-400">{{ m.time }}</span>
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm text-slate-800">{{ m.analysis?.meal_name || m.text || '(照片)' }}</p>
+            <p v-if="m.analysis?.meal_name && m.text" class="line-clamp-2 text-xs text-slate-500">{{ m.text }}</p>
             <p v-if="m.tags?.length" class="text-xs text-slate-400">{{ m.tags.join(' ') }}</p>
           </div>
           <div v-if="m.analysis" class="flex items-center gap-1 pt-1">
