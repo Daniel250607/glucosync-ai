@@ -2,7 +2,7 @@
 import { computed, inject, reactive, ref } from 'vue'
 import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
 import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
-import { getGeminiKey, todayKey } from '../firebase.js'
+import { getAiKey, todayKey } from '../firebase.js'
 import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
 import { parseBaselineLabs } from '../data/healthContextImport.js'
 import LabTrendChart from './LabTrendChart.vue'
@@ -211,9 +211,9 @@ function applyProposed() {
 
 async function runEvaluation() {
   evalError.value = ''
-  const apiKey = getGeminiKey()
+  const apiKey = getAiKey()
   if (!apiKey) {
-    evalError.value = '尚未設定 Gemini API Key。'
+    evalError.value = '尚未設定 AI 的 API Key。'
     emit('open-settings')
     return
   }

@@ -1,5 +1,65 @@
 import { describe, expect, it } from 'vitest'
-import { requestTimeoutMs, targetSafetyWarnings } from '../../services/gemini.js'
+import {
+  grokRequestBody,
+  grokTimeoutMs,
+  normalizeProvider,
+  requestTimeoutMs,
+  targetSafetyWarnings,
+  toJsonSchema,
+} from '../../services/gemini.js'
+
+describe('Grok provider helpers', () => {
+  const schema = {
+    type: 'OBJECT',
+    properties: {
+      name: { type: 'STRING' },
+      level: { type: 'STRING', enum: ['green', 'red'] },
+      items: { type: 'ARRAY', items: { type: 'OBJECT', properties: { n: { type: 'NUMBER' } }, required: ['n'] } },
+    },
+    required: ['name'],
+  }
+
+  it('converts the Gemini schema to strict JSON Schema', () => {
+    expect(toJsonSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        level: { type: 'string', enum: ['green', 'red'] },
+        items: {
+          type: 'array',
+          items: { type: 'object', properties: { n: { type: 'number' } }, required: ['n'], additionalProperties: false },
+        },
+      },
+      required: ['name', 'level', 'items'],
+      additionalProperties: false,
+    })
+  })
+
+  it('builds a chat request with system text, user text and images', () => {
+    const body = grokRequestBody({
+      model: 'grok-x',
+      system: 'SYS',
+      parts: [{ text: 'meal' }, { inlineData: { mimeType: 'image/jpeg', data: 'AAAA' } }],
+      schema,
+    })
+    expect(body.model).toBe('grok-x')
+    expect(body.messages[0]).toEqual({ role: 'system', content: 'SYS' })
+    expect(body.messages[1].content).toEqual([
+      { type: 'text', text: 'meal' },
+      { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } },
+    ])
+    expect(body.response_format.type).toBe('json_schema')
+    expect(body.response_format.json_schema.schema.type).toBe('object')
+  })
+
+  it('timeouts and provider normalization', () => {
+    expect(grokTimeoutMs('grok-4.20-0309-non-reasoning')).toBe(30000)
+    expect(grokTimeoutMs('grok-4.20-0309-reasoning')).toBe(90000)
+    expect(normalizeProvider('grok')).toBe('grok')
+    expect(normalizeProvider(undefined)).toBe('gemini')
+    expect(normalizeProvider('other')).toBe('gemini')
+  })
+})
 
 describe('requestTimeoutMs', () => {
   it('grows with the thinking budget', () => {

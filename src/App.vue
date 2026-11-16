@@ -64,9 +64,13 @@ import {
 import { parseMedications } from './data/healthContextImport.js'
 import { mergeLabRecord } from './data/labContext.js'
 import {
+  AI_PROVIDERS,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_GROK_MODEL,
   DEFAULT_THINKING_BUDGET,
   GEMINI_MODEL_OPTIONS,
+  GROK_MODEL_OPTIONS,
+  normalizeProvider,
   THINKING_LEVEL_OPTIONS,
   normalizeThinkingBudget,
   targetSafetyWarnings,
@@ -348,8 +352,22 @@ const settings = reactive({
   firebaseConfig: '',
   geminiModel: DEFAULT_GEMINI_MODEL,
   thinkingBudget: DEFAULT_THINKING_BUDGET,
+  aiProvider: 'gemini',
+  grokApiKey: '',
+  grokModel: DEFAULT_GROK_MODEL,
   healthContext: '',
 })
+/** Copy the AI-related fields from saved settings into the settings form. */
+function loadAiSettingsForm(s = loadSettings()) {
+  settings.geminiApiKey = s.geminiApiKey || ''
+  settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
+  settings.thinkingBudget = normalizeThinkingBudget(
+    s.thinkingBudget != null && s.thinkingBudget !== '' ? s.thinkingBudget : DEFAULT_THINKING_BUDGET,
+  )
+  settings.aiProvider = normalizeProvider(s.aiProvider)
+  settings.grokApiKey = s.grokApiKey || ''
+  settings.grokModel = s.grokModel || DEFAULT_GROK_MODEL
+}
 const settingsError = ref('')
 const pendingPairBanner = ref(false)
 const qrPair = reactive({
@@ -540,13 +558,9 @@ function openSettings(initialTab) {
   settingsTab.value = initialTab === 'targets' ? 'targets' : 'system'
   showApiKey.value = false
   const s = loadSettings()
-  settings.geminiApiKey = s.geminiApiKey || ''
+  loadAiSettingsForm(s)
   settings.firebaseConfig = s.firebaseConfig || ''
-  settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
   settings.healthContext = s.healthContext || ''
-  settings.thinkingBudget = normalizeThinkingBudget(
-    s.thinkingBudget != null && s.thinkingBudget !== '' ? s.thinkingBudget : DEFAULT_THINKING_BUDGET,
-  )
   settingsError.value = ''
   dataMsg.value = ''
   loadDraft()
@@ -605,6 +619,9 @@ function submitSettings() {
     firebaseConfig: text,
     geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
     thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
+    aiProvider: normalizeProvider(settings.aiProvider),
+    grokApiKey: settings.grokApiKey.trim(),
+    grokModel: settings.grokModel.trim() || DEFAULT_GROK_MODEL,
     healthContext: settings.healthContext.trim(),
   })
   // Only write an override when something actually differs from the current effective config.
@@ -786,7 +803,7 @@ function pairNeedsReload(fb, prevProjectId) {
 function confirmPairing(fb) {
   const incoming = pairFirebaseConfig(fb)
   const current = getStoredFirebaseConfig()
-  const lines = ['這個網址要把配對設定（Gemini API Key、模型）匯入此瀏覽器。']
+  const lines = ['這個網址要把配對設定（AI 服務的 API Key、模型）匯入此瀏覽器。']
   if (incoming && incoming.projectId && (!current || current.projectId !== incoming.projectId)) {
     lines.push(
       '',
@@ -848,14 +865,15 @@ function consumeLocalPair(payload) {
     geminiKey: payload.gk,
     geminiModel: payload.gm,
     thinkingBudget: normalizeThinkingBudget(payload.tb),
+    aiProvider: payload.ap,
+    grokKey: payload.xk,
+    grokModel: payload.xm,
     firebaseConfig: payload.fb,
   })
   markNonceUsed(payload.n)
   const s = loadSettings()
-  settings.geminiApiKey = s.geminiApiKey || ''
+  loadAiSettingsForm(s)
   settings.firebaseConfig = s.firebaseConfig || ''
-  settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
-  settings.thinkingBudget = normalizeThinkingBudget(s.thinkingBudget)
   showToast('🎉 手機配對完成！')
   if (pairNeedsReload(payload.fb, prevProjectId)) location.reload()
   return true
@@ -878,14 +896,15 @@ async function consumePendingCloudPair() {
       geminiKey: data.geminiKey,
       geminiModel: data.geminiModel,
       thinkingBudget: normalizeThinkingBudget(data.thinkingBudget),
+      aiProvider: data.aiProvider,
+      grokKey: data.grokKey,
+      grokModel: data.grokModel,
     })
     await deleteQrPairing(pending.t)
     writePendingPair(null)
     const s = loadSettings()
-    settings.geminiApiKey = s.geminiApiKey || ''
+    loadAiSettingsForm(s)
     settings.firebaseConfig = s.firebaseConfig || ''
-    settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
-    settings.thinkingBudget = normalizeThinkingBudget(s.thinkingBudget)
     showToast('🎉 手機配對完成！金鑰與設定已成功匯入，QR Code 已銷毀失效')
   } catch (err) {
     showToast(err.message || String(err))
@@ -942,6 +961,9 @@ async function generateQrPairing() {
           geminiKey: settings.geminiApiKey.trim(),
           geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
           thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
+          aiProvider: normalizeProvider(settings.aiProvider),
+          grokKey: settings.grokApiKey.trim(),
+          grokModel: settings.grokModel.trim() || DEFAULT_GROK_MODEL,
         },
         keyBytes,
       )
@@ -968,9 +990,9 @@ async function generateQrPairing() {
       // Offline QR: the key travels in plain text and expiry / one-time use are only checked by the
       // scanning device, so a photo of the QR keeps working. Warn before showing it.
       if (
-        settings.geminiApiKey.trim() &&
+        (settings.geminiApiKey.trim() || settings.grokApiKey.trim()) &&
         !window.confirm(
-          '目前未登入雲端，只能產生離線 QR Code：\n\nGemini API Key 會以未加密方式放在 QR Code 裡。任何人拍到它（或從掃描 App 的紀錄）都能取得金鑰，5 分鐘時效也擋不住。\n\n建議先用 Google 登入再產生（加密配對）。仍要產生嗎？',
+          '目前未登入雲端，只能產生離線 QR Code：\n\nAPI Key（Gemini、Grok）會以未加密方式放在 QR Code 裡。任何人拍到它（或從掃描 App 的紀錄）都能取得金鑰，5 分鐘時效也擋不住。\n\n建議先用 Google 登入再產生（加密配對）。仍要產生嗎？',
         )
       ) {
         return
@@ -983,6 +1005,9 @@ async function generateQrPairing() {
         gk: settings.geminiApiKey.trim(),
         gm: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
         tb: normalizeThinkingBudget(settings.thinkingBudget),
+        ap: normalizeProvider(settings.aiProvider),
+        xk: settings.grokApiKey.trim() || undefined,
+        xm: settings.grokApiKey.trim() ? settings.grokModel.trim() || DEFAULT_GROK_MODEL : undefined,
         fb: fbObj || undefined,
       }
       qrPair.mode = 'local'
@@ -1290,7 +1315,67 @@ const qrCountdownLabel = computed(() => {
           <section class="rounded-2xl bg-white p-4 ring-1 ring-slate-200">
             <h3 class="text-sm font-semibold text-slate-800">🤖 AI 設定</h3>
 
-            <label class="mt-3 block text-sm font-medium text-slate-700">
+            <p class="mt-3 text-sm font-medium text-slate-700">使用的 AI 服務</p>
+            <div class="mt-1 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+              <button
+                v-for="p in AI_PROVIDERS"
+                :key="p.id"
+                type="button"
+                class="rounded-lg px-2 py-2 text-sm font-medium"
+                :class="settings.aiProvider === p.id ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-500'"
+                @click="settings.aiProvider = p.id"
+              >{{ p.label }}</button>
+            </div>
+            <p class="mt-1 text-xs text-slate-400">兩邊的金鑰可以都存著，隨時切換；餐點、總結、檢驗評估等所有 AI 功能都會改用選到的服務。</p>
+
+            <template v-if="settings.aiProvider === 'grok'">
+              <label class="mt-4 block text-sm font-medium text-slate-700">
+                Grok API Key
+                <div class="mt-1 flex gap-2">
+                  <input
+                    v-model="settings.grokApiKey"
+                    :type="showApiKey ? 'text' : 'password'"
+                    autocomplete="off"
+                    placeholder="xai-..."
+                    class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2.5 text-base"
+                  />
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-lg bg-slate-100 px-3 text-xs text-slate-600"
+                    @click="showApiKey = !showApiKey"
+                  >{{ showApiKey ? '隱藏' : '顯示' }}</button>
+                </div>
+              </label>
+              <p class="mt-1 text-xs text-slate-400">在 xAI 主控台建立「Grok API」類型的金鑰；建議只勾要用的 Chat 模型並設定用量上限。</p>
+
+              <label class="mt-4 block text-sm font-medium text-slate-700">
+                Grok 模型名稱 (Model ID)
+                <input
+                  v-model="settings.grokModel"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  :placeholder="DEFAULT_GROK_MODEL"
+                  class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
+                />
+              </label>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button
+                  v-for="m in GROK_MODEL_OPTIONS"
+                  :key="m"
+                  type="button"
+                  class="rounded-full px-3 py-1.5 text-xs"
+                  :class="settings.grokModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+                  @click="settings.grokModel = m"
+                >
+                  {{ m }}
+                </button>
+              </div>
+              <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GROK_MODEL }}（不推理，回應較快）。reasoning 模型較仔細但較慢。餐點照片需要支援圖片輸入的模型。</p>
+            </template>
+
+            <template v-else>
+            <label class="mt-4 block text-sm font-medium text-slate-700">
               Gemini API Key
               <div class="mt-1 flex gap-2">
                 <input
@@ -1348,6 +1433,7 @@ const qrCountdownLabel = computed(() => {
               </button>
             </div>
             <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint }}</p>
+            </template>
 
             <p class="mt-4 text-sm font-medium text-slate-700">🩺 健康背景（基準檢驗、藥物、目標）</p>
             <p class="text-xs text-slate-400">僅存於此瀏覽器，AI 請求時才附上；範本見 docs/health_context.example.md。</p>

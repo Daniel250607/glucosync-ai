@@ -1,6 +1,6 @@
 # GlucoSync AI
 
-這是一個控糖、降脂的個人健康紀錄 App，在手機瀏覽器上就能使用。它可以記錄每天的飲食、飲水、運動和用藥，並用 Gemini AI 分析餐點、提出建議。
+這是一個控糖、降脂的個人健康紀錄 App，在手機瀏覽器上就能使用。它可以記錄每天的飲食、飲水、運動和用藥，並用 AI（Gemini 或 Grok，可在設定頁切換）分析餐點、提出建議。
 
 > ⚠️ 本 App 只是個人的紀錄與參考工具，不能取代醫師的診斷或治療。AI 給的建議不會、也不應該用來調整藥物；有任何疑問請找主治醫師。
 
@@ -18,14 +18,14 @@
 ## 資料與隱私
 
 - 資料預設只存在這個瀏覽器（localStorage）。設定好 Firebase 並登入 Google 後，才會同步到您自己的 Firestore。
-- Gemini API Key 和 Firebase 設定只存在瀏覽器的設定頁裡，不會寫進程式碼，也不會出現在公開的網頁上。
+- AI 服務的 API Key（Gemini、Grok）和 Firebase 設定只存在瀏覽器的設定頁裡，不會寫進程式碼，也不會出現在公開的網頁上。
 - 健康背景、檢驗基準值和用藥清單都由使用者在設定頁自行輸入或匯入，程式碼裡沒有任何個人資料。
 - 匯出的備份檔不包含 API Key 和 Firebase 設定。
 
 ## 使用方式
 
 1. 打開部署好的網頁（GitHub Pages）。
-2. 到 ⚙️ 設定貼上自己的 Gemini API Key。
+2. 到 ⚙️ 設定選擇 AI 服務（Gemini 或 Grok），貼上自己的 API Key。Grok 要在 xAI 主控台建立「Grok API」類型的金鑰。
 3. 需要多台裝置同步時，在設定頁貼上 Firebase 網頁設定，並用 Google 登入。
 4. 在設定頁的「健康背景」可以匯入自己的背景資料，格式參考 `docs/health_context.example.md`。
 
@@ -54,4 +54,4 @@ push 到 `main` 後，GitHub Actions（`.github/workflows/deploy.yml`）會自�
 
 ## 技術
 
-Vue 3、Vite、Tailwind CSS、Chart.js、Firebase（Auth、Firestore）、Gemini API（Structured Outputs）。
+Vue 3、Vite、Tailwind CSS、Chart.js、Firebase（Auth、Firestore）、Gemini API 或 xAI Grok API（Structured Outputs）。

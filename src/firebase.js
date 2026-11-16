@@ -53,6 +53,12 @@ export function getGeminiKey() {
   return loadSettings().geminiApiKey || devKey || ''
 }
 
+/** Key of the AI provider selected in settings (Gemini by default; Grok has no .env fallback). */
+export function getAiKey() {
+  const s = loadSettings()
+  return s.aiProvider === 'grok' ? String(s.grokApiKey || '') : getGeminiKey()
+}
+
 // Accepts strict JSON or a pasted JS object literal ({ apiKey: "..." }).
 export function parseFirebaseConfig(text) {
   if (!text || !text.trim()) return null
@@ -508,7 +514,7 @@ export function getStoredFirebaseConfig() {
   return parseFirebaseConfig(loadSettings().firebaseConfig)
 }
 
-export function applyPairedSettings({ geminiKey, geminiModel, thinkingBudget, firebaseConfig } = {}) {
+export function applyPairedSettings({ geminiKey, geminiModel, thinkingBudget, firebaseConfig, aiProvider, grokKey, grokModel } = {}) {
   const prev = loadSettings()
   let fbText = prev.firebaseConfig || ''
   if (firebaseConfig != null) {
@@ -519,6 +525,10 @@ export function applyPairedSettings({ geminiKey, geminiModel, thinkingBudget, fi
     geminiApiKey: geminiKey != null ? String(geminiKey) : prev.geminiApiKey || '',
     geminiModel: String(geminiModel || '').trim() || prev.geminiModel || '',
     thinkingBudget: thinkingBudget != null ? thinkingBudget : prev.thinkingBudget,
+    // Older QR codes carry no provider fields: keep this device's current choice.
+    aiProvider: aiProvider === 'grok' || aiProvider === 'gemini' ? aiProvider : prev.aiProvider || 'gemini',
+    grokApiKey: grokKey != null ? String(grokKey) : prev.grokApiKey || '',
+    grokModel: String(grokModel || '').trim() || prev.grokModel || '',
     firebaseConfig: fbText,
   })
 }

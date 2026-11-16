@@ -14,7 +14,7 @@ import {
   resetCustom,
 } from '../data/presets.js'
 import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, mealsForSummary, suggestExerciseProfile, summarizeDay, summarizeDayAI } from '../services/gemini.js'
-import { getGeminiKey, todayKey } from '../firebase.js'
+import { getAiKey, todayKey } from '../firebase.js'
 import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
 import { changeWater, lastWaterTime, minutesBetween, removeWaterLog, undoWaterChange, untimedWaterCc, waterLogs } from '../data/waterLog.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
@@ -204,9 +204,9 @@ function logCustomWater() {
 
 async function askHydrationSchedule() {
   hydrationAdviceError.value = ''
-  const apiKey = getGeminiKey()
+  const apiKey = getAiKey()
   if (!apiKey) {
-    hydrationAdviceError.value = '尚未設定 Gemini API Key。'
+    hydrationAdviceError.value = '尚未設定 AI 的 API Key。'
     emit('open-settings')
     return
   }
@@ -526,7 +526,7 @@ function addExerciseTypePreset() {
   exerciseForm.type = t
   newExerciseType.value = ''
   // New type: ask AI right away when a key is set; otherwise the name-based guess applies.
-  if (getGeminiKey()) askProfileSuggestion(t)
+  if (getAiKey()) askProfileSuggestion(t)
 }
 
 function deleteExerciseTypePreset(t) {
@@ -543,9 +543,9 @@ const profileSuggestions = ref([])
 const evaluatingAll = ref(false)
 
 async function askProfileSuggestion(t) {
-  const apiKey = getGeminiKey()
+  const apiKey = getAiKey()
   if (!apiKey) {
-    exerciseManageError.value = '尚未設定 Gemini API Key。'
+    exerciseManageError.value = '尚未設定 AI 的 API Key。'
     emit('open-settings')
     return
   }
@@ -564,7 +564,7 @@ async function askProfileSuggestion(t) {
 }
 
 async function evaluateAllTypes() {
-  if (!getGeminiKey()) return askProfileSuggestion(live.exerciseTypes[0])
+  if (!getAiKey()) return askProfileSuggestion(live.exerciseTypes[0])
   evaluatingAll.value = true
   try {
     for (const t of [...live.exerciseTypes]) await askProfileSuggestion(t)
@@ -879,9 +879,9 @@ async function submitMeal(withAI) {
     analysis: null,
   }
   if (withAI) {
-    const apiKey = getGeminiKey()
+    const apiKey = getAiKey()
     if (!apiKey) {
-      error.value = '尚未設定 Gemini API Key。'
+      error.value = '尚未設定 AI 的 API Key。'
       emit('open-settings')
       return
     }
@@ -973,9 +973,9 @@ const summaryBusy = ref(false)
 const summaryError = ref('')
 async function runDaySummary() {
   summaryError.value = ''
-  const apiKey = getGeminiKey()
+  const apiKey = getAiKey()
   if (!apiKey) {
-    summaryError.value = '尚未設定 Gemini API Key。'
+    summaryError.value = '尚未設定 AI 的 API Key。'
     emit('open-settings')
     return
   }

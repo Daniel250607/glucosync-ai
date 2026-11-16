@@ -12,7 +12,7 @@
 
 - Vue 3 + Vite + Tailwind 的單頁 App，部署在 GitHub Pages（push 到 `main` 會自動部署，見 `.github/workflows/deploy.yml`）。
 - 資料存在 localStorage；使用者登入 Google 後，會再和 Firestore 同步（`src/firebase.js`、`src/data/syncMerge.js`）。
-- AI 分析使用 Gemini API（`src/services/gemini.js`）。金鑰只存在使用者的瀏覽器裡，不會寫進程式或 build。
+- AI 分析使用 Gemini API 或 xAI Grok API（設定頁切換，預設 Gemini；兩者都在 `src/services/gemini.js` 的 `generate()`）。金鑰只存在使用者的瀏覽器裡，不會寫進程式或 build。
 - `firestore.rules` 是參考檔，要手動貼到 Firebase Console 才會生效。
 
 ## 指令

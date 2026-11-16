@@ -21,6 +21,63 @@ export function getGeminiModel() {
   return (loadSettings().geminiModel || '').trim() || DEFAULT_GEMINI_MODEL
 }
 
+// ---------- AI provider (Gemini or xAI Grok) ----------
+export const AI_PROVIDERS = [
+  { id: 'gemini', label: 'Gemini' },
+  { id: 'grok', label: 'Grok' },
+]
+export const DEFAULT_GROK_MODEL = 'grok-4.20-0309-non-reasoning'
+export const GROK_MODEL_OPTIONS = ['grok-4.20-0309-non-reasoning', 'grok-4.20-0309-reasoning', 'grok-4.7']
+const GROK_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
+
+export function normalizeProvider(v) {
+  return v === 'grok' ? 'grok' : 'gemini'
+}
+
+export function getGrokModel() {
+  return (loadSettings().grokModel || '').trim() || DEFAULT_GROK_MODEL
+}
+
+function providerLabel(provider) {
+  return provider === 'grok' ? 'Grok' : 'Gemini'
+}
+
+/**
+ * Convert a Gemini responseSchema (OBJECT / STRING / NUMBER / ARRAY, upper case) into standard JSON Schema
+ * for OpenAI-compatible structured outputs: lower-case types, every property required, no extra properties.
+ */
+export function toJsonSchema(s) {
+  if (!s || typeof s !== 'object') return s
+  const type = String(s.type || '').toLowerCase()
+  const out = { type }
+  if (s.enum) out.enum = [...s.enum]
+  if (type === 'object') {
+    out.properties = Object.fromEntries(Object.entries(s.properties || {}).map(([k, v]) => [k, toJsonSchema(v)]))
+    out.required = Object.keys(out.properties)
+    out.additionalProperties = false
+  }
+  if (type === 'array') out.items = toJsonSchema(s.items)
+  return out
+}
+
+/** Request body for xAI's OpenAI-compatible chat completions API. */
+export function grokRequestBody({ model, system, parts, schema }) {
+  const content = parts.map((p) =>
+    p.inlineData
+      ? { type: 'image_url', image_url: { url: `data:${p.inlineData.mimeType};base64,${p.inlineData.data}` } }
+      : { type: 'text', text: p.text || '' },
+  )
+  return {
+    model,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content },
+    ],
+    response_format: { type: 'json_schema', json_schema: { name: 'glucosync_result', strict: true, schema: toJsonSchema(schema) } },
+  }
+}
+
 /** thinkingBudget 0 explicitly disables extended reasoning tokens. */
 export function normalizeThinkingBudget(value) {
   const n = parseInt(value ?? DEFAULT_THINKING_BUDGET, 10)
@@ -222,9 +279,10 @@ const labEvalSchema = {
 
 // ---------- HTTP helpers (retry + readable errors) ----------
 const HTTP_HINT = {
-  429: '請求過於頻繁，請稍後再試',
-  500: 'Google 伺服器內部錯誤，請稍後再試',
-  503: 'Google 伺服器負載過高，請稍後再試',
+  400: '請求內容不被接受（模型名稱或照片格式可能不支援），請至設定檢查',
+  429: '請求過於頻繁或額度不足，請稍後再試',
+  500: 'AI 伺服器內部錯誤，請稍後再試',
+  503: 'AI 伺服器負載過高，請稍後再試',
   401: 'API Key 無效或已過期，請至設定檢查',
   403: 'API Key 無權限或配額不足，請至設定檢查',
   404: '找不到此模型，請至設定更換模型名稱',
@@ -237,7 +295,8 @@ function sleep(ms) {
 async function parseErrorBody(res) {
   try {
     const j = await res.json()
-    return j?.error?.message || ''
+    const e = j?.error
+    return String((typeof e === 'string' ? e : e?.message) || j?.message || '').slice(0, 200)
   } catch {
     try {
       return (await res.text()).slice(0, 200)
@@ -247,9 +306,9 @@ async function parseErrorBody(res) {
   }
 }
 
-function formatHttpError(status, detail) {
-  const hint = HTTP_HINT[status] || 'Gemini API 呼叫失敗'
-  return detail ? `[HTTP ${status}] ${hint} — ${detail}` : `[HTTP ${status}] ${hint}`
+function formatHttpError(status, detail, label = 'Gemini') {
+  const hint = HTTP_HINT[status] || 'API 呼叫失敗'
+  return detail ? `[${label} HTTP ${status}] ${hint} — ${detail}` : `[${label} HTTP ${status}] ${hint}`
 }
 
 /** Request timeout (ms) grows with the thinking budget: a high-thinking lab review needs far longer than a quick meal log. */
@@ -271,7 +330,7 @@ function timeoutError(timeoutMs) {
  * POST and parse the JSON response. 503 / 429 / network failures get ONE retry; a timeout is not
  * retried (a second attempt would most likely time out too). The timeout also covers reading the body.
  */
-async function postJsonWithRetry(url, init, timeoutMs) {
+async function postJsonWithRetry(url, init, timeoutMs, label = 'Gemini') {
   const maxAttempts = 2
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const isLast = attempt === maxAttempts - 1
@@ -295,7 +354,7 @@ async function postJsonWithRetry(url, init, timeoutMs) {
           return await res.json()
         } catch (e) {
           if (e.name === 'AbortError') throw timeoutError(timeoutMs)
-          throw new Error('無法解析 Gemini 回傳的內容。')
+          throw new Error(`無法解析 ${label} 回傳的內容。`)
         }
       }
 
@@ -306,23 +365,53 @@ async function postJsonWithRetry(url, init, timeoutMs) {
           continue
         }
         // Last attempt: fail fast with a friendly message instead of waiting again.
-        throw new Error('[HTTP 503] Google 伺服器目前繁忙，已自動為您保留輸入內容，請稍後再試或點擊「只記錄」。')
+        throw new Error(`[${label} HTTP 503] 伺服器目前繁忙，已自動為您保留輸入內容，請稍後再試或點擊「只記錄」。`)
       }
       if (res.status === 429 && !isLast) {
         await sleep(2000)
         continue
       }
-      throw new Error(formatHttpError(res.status, detail))
+      throw new Error(formatHttpError(res.status, detail, label))
     } finally {
       clearTimeout(timeoutId)
     }
   }
-  throw new Error('Gemini API 呼叫失敗')
+  throw new Error(`${label} API 呼叫失敗`)
 }
 
 // ---------- Core request ----------
+/** Grok has no thinking-budget setting here: non-reasoning models answer fast, reasoning models need longer. */
+export function grokTimeoutMs(model) {
+  return /non-reasoning/i.test(String(model || '')) ? 30000 : 90000
+}
+
+async function generateGrok({ apiKey, parts, schema, labs }) {
+  const model = getGrokModel()
+  const data = await postJsonWithRetry(
+    GROK_ENDPOINT,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(grokRequestBody({ model, system: systemInstruction(labs), parts, schema })),
+    },
+    grokTimeoutMs(model),
+    'Grok',
+  )
+  const msg = data?.choices?.[0]?.message
+  if (msg?.refusal) throw new Error(`Grok 拒絕回答：${String(msg.refusal).slice(0, 120)}`)
+  const text = typeof msg?.content === 'string' ? msg.content : ''
+  if (!text) throw new Error('Grok 未回傳內容。')
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error('無法解析 Grok 回傳的 JSON。')
+  }
+}
+
 async function generate({ apiKey, parts, schema, labs = [] }) {
-  if (!apiKey) throw new Error('尚未設定 Gemini API Key，請至右上角設定。')
+  const provider = normalizeProvider(loadSettings().aiProvider)
+  if (!apiKey) throw new Error(`尚未設定 ${providerLabel(provider)} API Key，請至右上角設定。`)
+  if (provider === 'grok') return generateGrok({ apiKey, parts, schema, labs })
   const model = getGeminiModel()
   const thinkingBudget = getThinkingBudget()
   const data = await postJsonWithRetry(geminiEndpoint(model), {
