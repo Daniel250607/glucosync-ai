@@ -16,6 +16,7 @@ import {
 import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, mealsForSummary, suggestExerciseProfile, summarizeDay, summarizeDayAI } from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
 import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
+import { moveItem, sameOrder } from '../data/reorder.js'
 import { changeWater, lastWaterTime, minutesBetween, removeWaterLog, undoWaterChange, untimedWaterCc, waterLogs } from '../data/waterLog.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
 
@@ -527,6 +528,36 @@ function addExerciseTypePreset() {
   newExerciseType.value = ''
   // New type: ask AI right away when a key is set; otherwise the name-based guess applies.
   if (getAiKey()) askProfileSuggestion(t)
+}
+
+// ---------- drag to reorder exercise types (pointer events: works with touch and mouse) ----------
+const exerciseDrag = reactive({ type: '', order: null, pointerId: null })
+const exerciseTypesShown = computed(() => exerciseDrag.order || live.exerciseTypes)
+
+function startExerciseDrag(e, t) {
+  exerciseDrag.type = t
+  exerciseDrag.order = [...live.exerciseTypes]
+  exerciseDrag.pointerId = e.pointerId
+  e.currentTarget.setPointerCapture?.(e.pointerId)
+}
+
+function moveExerciseDrag(e) {
+  if (!exerciseDrag.order || e.pointerId !== exerciseDrag.pointerId) return
+  const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-ex-type]')
+  const target = over?.getAttribute('data-ex-type')
+  if (!target || target === exerciseDrag.type) return
+  const from = exerciseDrag.order.indexOf(exerciseDrag.type)
+  const to = exerciseDrag.order.indexOf(target)
+  exerciseDrag.order = moveItem(exerciseDrag.order, from, to)
+}
+
+function endExerciseDrag(e) {
+  if (!exerciseDrag.order || (e && e.pointerId !== exerciseDrag.pointerId)) return
+  const next = exerciseDrag.order
+  exerciseDrag.type = ''
+  exerciseDrag.order = null
+  exerciseDrag.pointerId = null
+  if (!sameOrder(next, live.exerciseTypes)) updateCustom('exerciseTypes', next)
 }
 
 function deleteExerciseTypePreset(t) {
@@ -1605,8 +1636,24 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           {{ evaluatingAll ? 'AI 評估中…' : '🤖 AI 評估全部項目' }}
         </button>
         <div class="space-y-2">
-          <div v-for="t in live.exerciseTypes" :key="t" class="rounded-lg bg-white p-2 text-xs text-slate-700 ring-1 ring-slate-200">
+          <p v-if="live.exerciseTypes.length > 1" class="text-[11px] text-slate-400">按住左邊的 ⠿ 拖曳，可以調整快選的順序。</p>
+          <div
+            v-for="t in exerciseTypesShown"
+            :key="t"
+            :data-ex-type="t"
+            class="rounded-lg bg-white p-2 text-xs text-slate-700 ring-1 transition-shadow"
+            :class="exerciseDrag.type === t ? 'opacity-80 shadow-lg ring-2 ring-teal-500' : 'ring-slate-200'"
+          >
             <div class="flex items-center gap-2">
+              <span
+                class="-my-1 -ml-1 grid size-8 shrink-0 cursor-grab touch-none select-none place-items-center rounded text-base text-slate-400 active:cursor-grabbing active:bg-slate-100"
+                role="button"
+                :aria-label="`拖曳調整 ${t} 的順序`"
+                @pointerdown.prevent="startExerciseDrag($event, t)"
+                @pointermove="moveExerciseDrag"
+                @pointerup="endExerciseDrag"
+                @pointercancel="endExerciseDrag"
+              >⠿</span>
               <span class="min-w-0 flex-1 truncate font-medium text-slate-800">{{ t }}</span>
               <button
                 type="button"
