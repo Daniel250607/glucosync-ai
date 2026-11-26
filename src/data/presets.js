@@ -15,9 +15,9 @@ export const TARGETS = {
   // Saturated fat warning / strict limit (g/day) for LDL-C control.
   satFatMin: 15,
   satFatMax: 20,
-  // Carb safety bounds (g/day): lower bound avoids ketogenic-like intake while on
-  // an SGLT-2 inhibitor; upper bound limits post-meal glucose load.
-  carbsMin: 100,
+  // Carb bounds (g/day), see RULES.carbs in targetRules.js: lower bound = DRI minimum (and no
+  // low-carb eating on an SGLT-2 inhibitor); upper bound = 4 carb exchanges per meal x 3.
+  carbsMin: 130,
   carbsMax: 180,
 }
 

@@ -63,6 +63,7 @@ import {
 } from './data/presets.js'
 import { parseMedications } from './data/healthContextImport.js'
 import { mergeLabRecord } from './data/labContext.js'
+import { ruleTargetsFor } from './data/targetRules.js'
 import {
   AI_PROVIDERS,
   DEFAULT_GEMINI_MODEL,
@@ -340,7 +341,7 @@ function applyProposedTargets(targets) {
   const merged = { ...live.targets, ...targets }
   updateCustom('targets', { ...merged, ...hydrationRangeFromWeight(merged.userWeight) })
   if (showSettings.value) loadDraft()
-  showToast('已套用建議目標至設定')
+  showToast('已套用依檢驗規則的目標')
 }
 
 // ---------- settings ----------
@@ -487,7 +488,9 @@ watch(
 )
 
 // Targets outside the clinical safety bounds: shown as a warning, saving stays possible.
-const targetWarnings = computed(() => targetSafetyWarnings(draft.targets))
+const targetWarnings = computed(() =>
+  targetSafetyWarnings(draft.targets, ruleTargetsFor(labs.value, { weight: draft.targets.userWeight, height: draft.targets.userHeight })),
+)
 const draftWeightRange = computed(() => weightRangeFromHeight(draft.targets.userHeight))
 
 function loadDraft() {
@@ -1548,7 +1551,7 @@ const qrCountdownLabel = computed(() => {
             />
           </label>
         </div>
-        <p class="mt-1 text-xs text-slate-400">預設：碳水 100-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。</p>
+        <p class="mt-1 text-xs text-slate-400">預設：碳水 130-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。碳水與飽和脂肪可在「檢驗」頁依檢驗規則一鍵套用。</p>
         <p class="mt-1 text-xs text-slate-500" data-testid="settings-weight-range">
           <template v-if="draftWeightRange">
             依身高 {{ draft.targets.userHeight }} cm：標準體重範圍 {{ draftWeightRange.min }}–{{ draftWeightRange.max }} kg（BMI 18.5–24），理想體重 {{ draftWeightRange.ideal }} kg。

@@ -1,9 +1,10 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
 import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
-import { averageIntake, clampProposedTargets, evaluateLabs, summarizeDay } from '../services/gemini.js'
+import { averageIntake, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
 import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
+import { RULES, ruleTargetsFor } from '../data/targetRules.js'
 import { parseBaselineLabs } from '../data/healthContextImport.js'
 import LabTrendChart from './LabTrendChart.vue'
 import ClinicReport from './ClinicReport.vue'
@@ -195,18 +196,20 @@ function recentIntakeDays(days) {
     .map((k) => summarizeDay(days[k]))
 }
 
-// Weight-based hydration band shown in the safety note (falls back to the 70 kg default band).
+// ---------- rule-based targets (src/data/targetRules.js; AI never decides these numbers) ----------
 const hydrationBand = computed(() => hydrationRangeFromWeight(live.targets.userWeight))
-const safeTargets = computed(() => clampProposedTargets(evaluation.value?.proposed_targets, live.targets))
-const targetsMatch = computed(() => {
-  const next = safeTargets.value
-  if (!next) return false
-  return Object.keys(next).every((k) => Number(live.targets[k]) === Number(next[k]))
-})
+const ruleResult = computed(() => ruleTargetsFor(props.labs))
+const RULE_ROWS = [
+  { label: '碳水 (g)', min: 'carbsMin', max: 'carbsMax' },
+  { label: '飽和脂肪 警示 / 上限 (g)', min: 'satFatMin', max: 'satFatMax' },
+]
+const targetsMatch = computed(() =>
+  Object.entries(ruleResult.value.targets).every(([k, v]) => Number(live.targets[k]) === Number(v)),
+)
 
-function applyProposed() {
-  if (!safeTargets.value || targetsMatch.value) return
-  emit('apply-targets', { ...safeTargets.value })
+function applyRuleTargets() {
+  if (targetsMatch.value) return
+  emit('apply-targets', { ...ruleResult.value.targets })
 }
 
 async function runEvaluation() {
@@ -385,6 +388,41 @@ async function runEvaluation() {
       </ul>
     </section>
 
+    <!-- Rule-based daily targets -->
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" data-testid="rule-targets">
+      <h2 class="font-semibold text-slate-800">📏 依檢驗規則的每日目標</h2>
+      <p class="text-xs text-slate-500">依最新檢驗、體重與身高，用固定的指引規則計算；同樣的資料每次結果都相同。規則最後核對：{{ RULES.reviewed }}。</p>
+      <dl class="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div v-for="r in RULE_ROWS" :key="r.min" class="rounded-lg bg-slate-50 p-2">
+          <dt class="text-slate-500">{{ r.label }}</dt>
+          <dd class="font-medium text-slate-800">
+            目前 {{ live.targets[r.min] }}–{{ live.targets[r.max] }} → 建議 {{ ruleResult.targets[r.min] }}–{{ ruleResult.targets[r.max] }}
+          </dd>
+        </div>
+      </dl>
+      <ul class="mt-3 space-y-1 text-xs text-slate-600">
+        <li v-for="r in ruleResult.reasons" :key="r.key"><b>{{ r.label }}</b>：{{ r.text }}</li>
+        <li>
+          <b>飲水</b>：依體重 {{ hydrationBand.userWeight }} kg 自動計算 {{ hydrationBand.hydrationMin }}–{{ hydrationBand.hydrationMax }} cc（每公斤 30–38 cc，下限不低於 2000 cc）。
+        </li>
+        <li><b>運動</b>：依醫囑設定（目前 {{ live.targets.exerciseTarget }} 分），不隨檢驗變動。</li>
+      </ul>
+      <div v-if="ruleResult.notices.length" class="mt-3 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert">
+        <p class="font-semibold">⚠️ 依檢驗的提醒</p>
+        <p v-for="n in ruleResult.notices" :key="n" class="mt-1">• {{ n }}</p>
+      </div>
+      <button
+        type="button"
+        class="mt-3 w-full rounded-xl bg-amber-600 py-3 font-semibold text-white disabled:opacity-60 active:bg-amber-700"
+        data-testid="apply-rule-targets"
+        :disabled="targetsMatch"
+        @click="applyRuleTargets"
+      >
+        {{ targetsMatch ? '目前目標已符合規則' : '套用建議目標至設定' }}
+      </button>
+      <p class="mt-2 text-[11px] text-slate-400">醫師另有指示時，可以在設定頁自行修改；按下套用才會寫入。</p>
+    </section>
+
     <!-- AI evaluation -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <h2 class="font-semibold text-slate-800">🤖 AI 飲食階段評估</h2>
@@ -407,34 +445,7 @@ async function runEvaluation() {
             {{ intakeStats.avg_exercise_min }} 分
           </p>
           <p class="mt-2 text-amber-950">{{ evaluation.unlocking_summary || '尚無解封說明。' }}</p>
-          <dl v-if="safeTargets" class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-            <div class="rounded-lg bg-white/80 p-2">
-              <dt class="text-amber-700">碳水 (g)</dt>
-              <dd class="font-medium text-slate-800">{{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} → {{ safeTargets.carbsMin }}–{{ safeTargets.carbsMax }}</dd>
-            </div>
-            <div class="rounded-lg bg-white/80 p-2">
-              <dt class="text-amber-700">飽和脂肪 (g)</dt>
-              <dd class="font-medium text-slate-800">{{ live.targets.satFatMin }}–{{ live.targets.satFatMax }} → {{ safeTargets.satFatMin }}–{{ safeTargets.satFatMax }}</dd>
-            </div>
-            <div class="rounded-lg bg-white/80 p-2">
-              <dt class="text-amber-700">飲水 (cc)</dt>
-              <dd class="font-medium text-slate-800">{{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} → {{ safeTargets.hydrationMin }}–{{ safeTargets.hydrationMax }}</dd>
-            </div>
-            <div class="rounded-lg bg-white/80 p-2">
-              <dt class="text-amber-700">運動 (分)</dt>
-              <dd class="font-medium text-slate-800">{{ live.targets.exerciseTarget }} → {{ safeTargets.exerciseTarget }}</dd>
-            </div>
-          </dl>
-          <button
-            v-if="safeTargets"
-            type="button"
-            class="mt-3 w-full rounded-xl bg-amber-600 py-3 font-semibold text-white disabled:opacity-60 active:bg-amber-700"
-            :disabled="targetsMatch"
-            @click="applyProposed"
-          >
-            {{ targetsMatch ? '目前目標已符合建議' : '✨ 一鍵套用建議目標至設定' }}
-          </button>
-          <p class="mt-2 text-[11px] text-amber-800">套用時守住安全邊界：碳水 100–180 g、飽和脂肪上限 ≤ 20 g、飲水 {{ hydrationBand.hydrationMin }}–{{ hydrationBand.hydrationMax }} cc（依體重 {{ hydrationBand.userWeight }} kg，下限不低於 2000 cc）、運動 ≥ 20 分。</p>
+          <p class="mt-2 text-[11px] text-amber-800">每日目標數字由上方「依檢驗規則的每日目標」決定，AI 只負責解釋與飲食建議。</p>
         </div>
         <div class="rounded-xl bg-indigo-50 p-3">
           <p class="font-semibold text-indigo-900">{{ evaluation.phase_name }}</p>

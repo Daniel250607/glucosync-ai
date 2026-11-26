@@ -2,6 +2,7 @@
 // The API key and model ID are never hardcoded: they are read from user settings / env.
 import { DEFAULT_REPS_PER_MIN, getBaselineDate, hydrationRangeFromWeight, live, medLabel } from '../data/presets.js'
 import { followUpLabRecords, labContextBlock } from '../data/labContext.js'
+import { RULES, ruleTargetLines, ruleTargetsFor } from '../data/targetRules.js'
 import { sickPromptContext } from '../data/sickDay.js'
 import { eatenBefore, isClockTime } from '../data/mealTime.js'
 import { waterLogs } from '../data/waterLog.js'
@@ -112,13 +113,13 @@ The LAB DATA block above is the authoritative source for every lab value. Any la
 The safety rules below are UNCONDITIONAL. Lab improvements may soften tone and allow modest flexibility inside these bounds, but never remove a rule.
 1. SGLT-2 inhibitor safety (latest U-Ketones and U-Sugar: see LAB DATA):
    - There is a risk of euglycemic diabetic ketoacidosis (euglycemic DKA) for as long as an SGLT-2 inhibitor is taken. A negative or improved ketone result and an improved HbA1c do NOT remove this risk: keep every rule in this section.
-   - NEVER recommend a zero-carb or ketogenic / very-low-carb diet, fasting, or skipping meals. Carbohydrate must stay moderate and distributed (at least 100 g/day, roughly 100-180 g/day; about 30-60 g per main meal), using low-GI, high-fiber sources (purple rice, multigrain, vegetables, legumes).
+   - NEVER recommend a zero-carb or ketogenic / very-low-carb diet, fasting, or skipping meals. Carbohydrate must stay moderate and distributed (never below the user-configured daily minimum, normally 130 g/day; roughly 130-180 g/day; about 45-60 g per main meal), using low-GI, high-fiber sources (purple rice, multigrain, vegetables, legumes).
    - If a meal has very low carbohydrate (< ~20 g for a main meal) or the user mentions fasting, vomiting, heavy alcohol or illness, set sglt2_ketone_safety_alert to "yellow" or "red" and advise adding a measured portion of complex carbohydrate and fluids (and to seek medical advice if ill).
    - Severity: if the latest U-Ketones is positive (+ or more), be stricter — flag a low-carb main meal (< ~30 g) at least "yellow" and use "red" below ~20 g. If it is negative or trace, use the thresholds above.
-2. LDL-C control (latest LDL-C, T-Cho, HDL-C and status: see LAB DATA; on a statin): prioritize reducing SATURATED FAT (never above 20 g/day; the user's warning level is in the request) and trans fat over limiting dietary cholesterol. Do not penalize eggs or seafood merely for cholesterol content; flag fatty cuts, skin, lard, cream, coconut/palm oil, fried and processed meat, and encourage unsaturated fats, fish, legumes, soluble fiber.
-   - Severity: if latest LDL-C is above target, judge saturated fat against the lower warning level and be strict; if the LDL-C target is met, keep the same 20 g ceiling but a more encouraging tone.
+2. LDL-C control (latest LDL-C, T-Cho, HDL-C and status: see LAB DATA; on a statin): prioritize reducing SATURATED FAT (never above the user-configured daily limit; the warning level and limit are in the request; guideline: < 7% of energy while LDL-C is above target, < 10% once met) and trans fat over limiting dietary cholesterol. Do not penalize eggs or seafood merely for cholesterol content; flag fatty cuts, skin, lard, cream, coconut/palm oil, fried and processed meat, and encourage unsaturated fats, fish, legumes, soluble fiber.
+   - Severity: if latest LDL-C is above target, judge saturated fat against the lower warning level and be strict; if the LDL-C target is met, keep the configured limit but a more encouraging tone.
 3. Glycemia / triglycerides (latest HbA1c, AC Sugar and TG with trend and status: see LAB DATA): flag refined starch, sugary drinks, sauces with sugar, large rice/noodle portions, and fried foods. Encourage eating order: vegetables -> protein -> carbohydrate (half portion), and post-meal light activity (marching in place 15-20 min).
-   - Severity: the further a latest value is above its target (status "above target"), the stricter the glycemic_tg_alert; "near target" or "target met" allows a milder tone and acknowledgement of progress, but carbohydrate never drops below 100 g/day and the eating order stays.
+   - Severity: the further a latest value is above its target (status "above target"), the stricter the glycemic_tg_alert; "near target" or "target met" allows a milder tone and acknowledgement of progress, but carbohydrate never drops below the configured daily minimum and the eating order stays.
 4. Renal / urine (latest UAcr, Micro-Albumin, eGFR, Creatinine, BUN, Uric Acid, U-Specific Gravity, U-Sugar: see LAB DATA): monitor sodium (aim < 2300 mg/day, ~< 800 mg/meal) and hydration ({{HYDRATION}}). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.
    - Severity: if latest UAcr is not at target or U-Specific Gravity is out of range, emphasize sodium and hydration more strongly; hydration never goes below 2000 cc/day on an SGLT-2 inhibitor in any case.
 5. Never give a diagnosis, never interpret labs as a diagnosis, and never change or suggest changing medication doses. For medication questions or worrying lab values advise consulting the treating physician.
@@ -128,7 +129,7 @@ The safety rules below are UNCONDITIONAL. Lab improvements may soften tone and a
 === TRAFFIC LIGHT SCHEME ===
 Each alert has "level" in {green, yellow, red} and a short "message" (<= 40 Chinese characters):
 - glycemic_tg_alert: carbohydrate load / refined starch / sugar / fried food effect on glucose and triglycerides.
-- ldl_saturated_fat_alert: saturated fat load relative to the daily budget (never above 20 g).
+- ldl_saturated_fat_alert: saturated fat load relative to the user-configured daily limit.
 - renal_hydration_alert: sodium load and hydration needs relevant to the latest UAcr and urine specific gravity.
 - sglt2_ketone_safety_alert: is carbohydrate adequate (not ketogenic) to avoid euglycemic DKA risk on an SGLT-2 inhibitor? Green means carbs are adequate; yellow/red means too low or risky situation.`
 
@@ -249,19 +250,6 @@ const labEvalSchema = {
     hydration_sodium_guidance: { type: 'STRING' },
     safety_flags: { type: 'ARRAY', items: { type: 'STRING' } },
     unlocking_summary: { type: 'STRING' },
-    proposed_targets: {
-      type: 'OBJECT',
-      properties: {
-        carbsMin: { type: 'NUMBER' },
-        carbsMax: { type: 'NUMBER' },
-        satFatMin: { type: 'NUMBER' },
-        satFatMax: { type: 'NUMBER' },
-        hydrationMin: { type: 'NUMBER' },
-        hydrationMax: { type: 'NUMBER' },
-        exerciseTarget: { type: 'NUMBER' },
-      },
-      required: ['carbsMin', 'carbsMax', 'satFatMin', 'satFatMax', 'hydrationMin', 'hydrationMax', 'exerciseTarget'],
-    },
   },
   required: [
     'phase_name',
@@ -273,7 +261,6 @@ const labEvalSchema = {
     'hydration_sodium_guidance',
     'safety_flags',
     'unlocking_summary',
-    'proposed_targets',
   ],
 }
 
@@ -476,7 +463,7 @@ function exerciseContextLines(dayContext) {
   const remaining = Math.max(0, target - done)
   return [
     `Exercise so far today: ${done} walking-equivalent min (exercise_min = each activity's actual minutes x its intensity factor, e.g. squats count more per minute than walking; see exercise_logs actual_min / factor) vs the daily exercise target of ${target} min.`,
-    'Factor this activity into the glycemic / carbohydrate assessment (e.g. post-meal walking or marching blunts the glucose spike), but NEVER loosen the clinical safety bounds because of exercise: daily carbohydrate stays within 100-180 g and the user-configured carb range (never ketogenic or ultra-low carb; euDKA risk on an SGLT-2 inhibitor), and the saturated-fat limits stay unchanged.',
+    'Factor this activity into the glycemic / carbohydrate assessment (e.g. post-meal walking or marching blunts the glucose spike), but NEVER loosen the clinical safety bounds because of exercise: daily carbohydrate stays within the user-configured carb range (never ketogenic or ultra-low carb; euDKA risk on an SGLT-2 inhibitor), and the saturated-fat limits stay unchanged.',
     remaining > 0
       ? `The exercise target is NOT met yet: ${remaining} min remaining. In actionable_advice, briefly remind the user that ${remaining} more minutes are needed to reach the ${target}-min target and suggest post-meal marching in place or walking (餐後踏步/散步).`
       : 'The exercise target is already met today; you may briefly acknowledge it in actionable_advice.',
@@ -684,64 +671,24 @@ export function averageIntake(summaries) {
 }
 
 /**
- * Clamp a model-proposed target set onto clinical safety bounds.
- * Carbs stay 100-180 g (no ketogenic intake on an SGLT-2 inhibitor). Saturated fat stays <= 20 g.
- * Hydration stays inside the weight-based band from hydrationRangeFromWeight() (current.userWeight,
- * else live.targets.userWeight; lower bound never below 2000 cc). Exercise stays at least 20 minutes.
- * Returns null when the payload has no numeric target fields.
+ * Warnings (not errors) for user-entered targets outside the guideline rules (src/data/targetRules.js).
+ * `rule` is the computeRuleTargets() result for the current labs and body data; without it the
+ * saturated-fat check is skipped. The user may still save, e.g. on the treating physician's advice.
  */
-export function clampProposedTargets(raw, current = {}) {
-  if (!raw || typeof raw !== 'object') return null
-  const keys = ['carbsMin', 'carbsMax', 'satFatMin', 'satFatMax', 'hydrationMin', 'hydrationMax', 'exerciseTarget']
-  const hasAny = keys.some((k) => raw[k] != null && raw[k] !== '' && Number.isFinite(Number(raw[k])))
-  if (!hasAny) return null
-  const num = (k, fallback) => {
-    const v = Number(raw[k])
-    if (Number.isFinite(v)) return v
-    const c = Number(current[k])
-    return Number.isFinite(c) ? c : fallback
-  }
-  const round1 = (v) => Math.round(v * 10) / 10
-
-  let carbsMin = Math.min(180, Math.max(100, num('carbsMin', 100)))
-  let carbsMax = Math.min(180, Math.max(100, num('carbsMax', 180)))
-  if (carbsMin > carbsMax) carbsMin = carbsMax
-
-  const satFatMax = Math.min(20, Math.max(1, num('satFatMax', 20)))
-  const satFatMin = Math.min(satFatMax, Math.max(0, num('satFatMin', 15)))
-
-  const band = hydrationBand(current.userWeight ?? live.targets?.userWeight)
-  const clampWater = (v) => Math.min(band.hydrationMax, Math.max(band.hydrationMin, v))
-  let hydrationMin = clampWater(num('hydrationMin', band.hydrationMin))
-  let hydrationMax = clampWater(num('hydrationMax', band.hydrationMax))
-  if (hydrationMin > hydrationMax) hydrationMin = hydrationMax
-
-  const exerciseTarget = Math.max(20, num('exerciseTarget', 20))
-
-  return {
-    carbsMin: round1(carbsMin),
-    carbsMax: round1(carbsMax),
-    satFatMin: round1(satFatMin),
-    satFatMax: round1(satFatMax),
-    hydrationMin: Math.round(hydrationMin),
-    hydrationMax: Math.round(hydrationMax),
-    exerciseTarget: Math.round(exerciseTarget),
-  }
-}
-
-/**
- * Warnings (not errors) for user-entered targets outside the clinical bounds that clampProposedTargets
- * enforces on AI proposals. The user may still save them, e.g. on the treating physician's advice.
- */
-export function targetSafetyWarnings(t = {}) {
+export function targetSafetyWarnings(t = {}, rule = null) {
   const num = (k) => (t[k] === '' || t[k] == null ? NaN : Number(t[k]))
   const out = []
   const carbsMin = num('carbsMin')
   const carbsMax = num('carbsMax')
   const satFatMax = num('satFatMax')
-  if (carbsMin < 100) out.push(`碳水最低 ${carbsMin} g 低於 100 g：服用 SGLT-2 抑制劑時碳水過低會增加酮酸中毒 (euDKA) 風險。`)
-  if (carbsMax > 180) out.push(`碳水最高 ${carbsMax} g 高於一般建議的 180 g。`)
-  if (satFatMax > 20) out.push(`飽和脂肪上限 ${satFatMax} g 高於 20 g (LDL-C 控制)。`)
+  if (carbsMin < RULES.carbs.min) {
+    out.push(`碳水最低 ${carbsMin} g 低於 ${RULES.carbs.min} g（每日最低需要量）：服用 SGLT-2 抑制劑時碳水過低會增加酮酸中毒 (euDKA) 風險。`)
+  }
+  if (carbsMax > RULES.carbs.max) out.push(`碳水最高 ${carbsMax} g 高於 ${RULES.carbs.max} g（每餐 4 份醣類）。`)
+  const ruleMax = Number(rule?.targets?.satFatMax)
+  if (Number.isFinite(ruleMax) && satFatMax > ruleMax) {
+    out.push(`飽和脂肪上限 ${satFatMax} g 高於依檢驗規則算出的 ${ruleMax} g（LDL-C 控制）。`)
+  }
   return out
 }
 
@@ -804,13 +751,13 @@ export async function evaluateLabs({ apiKey, labs, recentDays }) {
     `Recent 30-day intake averages (${intake.logged_days} days with records; each average uses only the days where that item was logged): average carbohydrates ${intake.avg_carbs_g} g/day and saturated fat ${intake.avg_saturated_fat_g} g/day over ${intake.macro_days} days with analyzed meals, average hydration ${intake.avg_hydration_cc} cc/day over ${intake.hydration_days} days with water logged, average exercise ${intake.avg_exercise_min} min/day over ${intake.logged_days} days. Days without records are missing data, not zero intake.`,
     `Intake average object: ${JSON.stringify(intake)}`,
     `Daily intake summaries inside that 30-day window: ${JSON.stringify(recentDays)}`,
-    `Sick days reported in that window (sick_day field in the summaries): ${(Array.isArray(recentDays) ? recentDays : []).filter((d) => d && d.sick_day).length}. Intake on sick days is not representative of usual habits; do not tighten targets because of sick-day intake alone.`,
+    `Sick days reported in that window (sick_day field in the summaries): ${(Array.isArray(recentDays) ? recentDays : []).filter((d) => d && d.sick_day).length}. Intake on sick days is not representative of usual habits; judge habits without them.`,
     ...userConfigLines(),
+    ...ruleTargetLines(ruleTargetsFor(labs)),
     'Compare lab trends with these actual eating habits before suggesting a phase change.',
-    `proposed_targets must stay inside clinical safety bounds: carbsMin and carbsMax within 100-180 g (NEVER ketogenic or ultra-low carb; euDKA risk on an SGLT-2 inhibitor), satFatMax <= 20 and satFatMin <= satFatMax (LDL-C), hydrationMin and hydrationMax within the weight-based range ${band.hydrationMin}-${band.hydrationMax} cc for ${band.userWeight} kg (never below 2000 cc; UAcr and urine specific gravity), exerciseTarget >= 20.`,
-    'If labs are improving and the 30-day averages already sit inside those bounds, you may modestly unlock portions (for example a slightly larger multigrain rice serving or a planned weekend flex meal) while keeping proposed_targets inside the bounds above.',
-    `If labs worsen or averages already breach a limit, tighten targets inside the same bounds. Do not raise saturated fat above 20 g, do not drop carbohydrate below 100 g, and do not drop hydration below ${band.hydrationMin} cc (never below 2000 cc).`,
-    'unlocking_summary: one or two Traditional Chinese sentences on whether meal portions can be increased safely.',
+    `The daily target NUMBERS are decided by the app's fixed rules above, not by you: never propose other numbers. If the user-configured targets differ from the rule-based ones, mention that the user can apply the rule-based targets on the lab page. Explain what the rules mean for this patient in carb_guidance and saturated_fat_guidance. Hydration stays in the weight-based range ${band.hydrationMin}-${band.hydrationMax} cc for ${band.userWeight} kg (never below 2000 cc).`,
+    'If labs are improving and the 30-day averages already sit inside the targets, you may suggest modest flexibility in food choices (for example a slightly larger multigrain rice serving inside the carb range or a planned weekend flex meal). If labs worsen or averages breach a limit, focus on which foods to change to get back inside the targets.',
+    'unlocking_summary: one or two Traditional Chinese sentences on whether meal portions can be increased safely inside the targets.',
     'Remember: never recommend ketogenic / zero-carb eating (SGLT-2 inhibitor; euDKA risk persists even if the latest U-Ketones in LAB DATA is negative); prioritize saturated fat over dietary cholesterol; keep hydration and sodium guidance.',
   ].join('\n')
   return generate({ apiKey, parts: [{ text }], schema: labEvalSchema, labs })

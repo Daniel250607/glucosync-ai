@@ -72,13 +72,18 @@ describe('requestTimeoutMs', () => {
 })
 
 describe('targetSafetyWarnings', () => {
-  it('is empty inside the clinical bounds', () => {
-    expect(targetSafetyWarnings({ carbsMin: 100, carbsMax: 180, satFatMax: 20 })).toEqual([])
+  const rule = { targets: { satFatMax: 15 } }
+  it('is empty inside the guideline rules', () => {
+    expect(targetSafetyWarnings({ carbsMin: 130, carbsMax: 180, satFatMax: 15 }, rule)).toEqual([])
   })
-  it('warns on low carbs, high carbs and high saturated fat', () => {
-    const w = targetSafetyWarnings({ carbsMin: 0, carbsMax: 200, satFatMax: 25 })
+  it('warns on low carbs, high carbs and saturated fat above the rule result', () => {
+    const w = targetSafetyWarnings({ carbsMin: 100, carbsMax: 200, satFatMax: 20 }, rule)
     expect(w).toHaveLength(3)
-    expect(w[0]).toContain('100 g')
+    expect(w[0]).toContain('130 g')
+    expect(w[2]).toContain('15 g')
+  })
+  it('skips the saturated-fat check without a rule result', () => {
+    expect(targetSafetyWarnings({ carbsMin: 130, carbsMax: 180, satFatMax: 30 })).toEqual([])
   })
   it('ignores empty fields (validation reports those)', () => {
     expect(targetSafetyWarnings({ carbsMin: '', carbsMax: null })).toEqual([])
