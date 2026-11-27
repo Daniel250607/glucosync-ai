@@ -385,7 +385,8 @@ const exerciseForm = reactive({
   reps: 50,
   sets: 3,
   intensity: 'moderate',
-  postMeal: null, // null = follow the automatic guess (a meal eaten within the last 2 hours)
+  time: '', // HH:MM the exercise started; '' = now (fill in when logging afterwards)
+  postMeal: null, // null = follow the automatic guess (a meal eaten within 2 hours before the start time)
 })
 const currentProfile = computed(() => exerciseProfile(exerciseForm.type))
 const currentCategory = computed(() => currentProfile.value.category)
@@ -410,10 +411,11 @@ const creditPreview = computed(() => {
   return '中等：計入每週有氧'
 })
 
-/** Default for the "after a meal" box: a meal on this day eaten within the post-meal window before now. */
+/** Default for the "after a meal" box: a meal on this day eaten within the post-meal window before the start time. */
 function postMealGuess() {
-  return isAfterMeal(props.day.meals, nowTime(), RULES.exercise.postMealWindowMin)
+  return isAfterMeal(props.day.meals, exerciseForm.time || nowTime(), RULES.exercise.postMealWindowMin)
 }
+const exerciseLogsSorted = computed(() => sortMealsByTime(props.day.exercise_logs))
 function postMealChecked() {
   return exerciseForm.postMeal ?? postMealGuess()
 }
@@ -465,7 +467,11 @@ function addExerciseLog(quickMin = null) {
   const repsMode = quickMin == null && exerciseForm.mode === 'reps'
   const profile = exerciseProfile(type)
   const weight = live.targets.userWeight
-  const time = nowTime()
+  if (exerciseForm.time && !isClockTime(exerciseForm.time)) {
+    exerciseManageError.value = '運動時間格式不正確。'
+    return
+  }
+  const time = exerciseForm.time || nowTime()
   const intensity = profile.category === 'aerobic' ? exerciseForm.intensity : undefined
   const met = profile.met || estimateMet(profile.category, intensity)
   const common = {
@@ -517,6 +523,7 @@ function addExerciseLog(quickMin = null) {
     syncExerciseTotal(d)
   })
   exerciseForm.note = ''
+  exerciseForm.time = ''
   exerciseForm.postMeal = null
   const amount = entry.mode === 'reps' ? `${entry.reps} 下 × ${entry.sets} 組` : `${entry.actual_min} 分`
   const entryId = entry.id
@@ -1163,10 +1170,10 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
     <!-- Hydration & Drinks -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <div class="flex items-start justify-between gap-2">
-        <div>
-          <div class="flex items-center gap-2">
-            <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
-            <label class="flex items-center text-xs text-slate-500" :title="`記錄 ${day.date} 的體重（不用每天記）；空白時飲水範圍沿用最近一次 ${live.targets.userWeight} kg`">
+        <div class="min-w-0">
+          <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
+          <div class="mt-1">
+            <label class="flex items-center whitespace-nowrap text-xs text-slate-500" :title="`記錄 ${day.date} 的體重（不用每天記）；空白時飲水範圍沿用最近一次 ${live.targets.userWeight} kg`">
               ⚖️ 體重
               <input
                 type="number"
@@ -1583,9 +1590,20 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <p v-if="exerciseForm.intensity === 'vigorous' && ketone" class="text-xs text-amber-700">尿酮還不是陰性，先不要做費力運動。</p>
         </div>
 
+        <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500" data-testid="ex-time">
+          <label class="flex items-center gap-1.5">
+            開始時間
+            <input v-model="exerciseForm.time" type="time" class="rounded-lg border border-slate-300 p-1.5 text-sm text-slate-800" />
+          </label>
+          <button v-if="exerciseForm.time" type="button" class="rounded-lg bg-slate-100 px-2.5 py-1.5 text-slate-700 active:bg-slate-200" @click="exerciseForm.time = ''">
+            改回現在
+          </button>
+          <span v-else>不填＝現在；運動完才記錄請填實際開始時間</span>
+        </div>
+
         <label class="flex items-center gap-2 text-xs text-slate-600">
           <input type="checkbox" :checked="postMealChecked()" @change="exerciseForm.postMeal = $event.target.checked" />
-          飯後 2 小時內的活動（計入餐後活動）
+          飯後 2 小時內的活動（計入餐後活動；依開始時間自動判斷，可手動改）
         </label>
 
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-12">
@@ -1869,7 +1887,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <button class="text-xs text-rose-500 active:text-rose-600" @click="clearExerciseLogs">清空當日運動</button>
         </div>
         <ul class="mt-1 divide-y divide-slate-100">
-          <li v-for="log in day.exercise_logs" :key="log.id" class="flex items-start gap-2 py-1.5 text-sm">
+          <li v-for="log in exerciseLogsSorted" :key="log.id" class="flex items-start gap-2 py-1.5 text-sm">
             <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
             <div class="min-w-0 flex-1">
               <span class="font-medium text-slate-800">{{ log.type }}</span>

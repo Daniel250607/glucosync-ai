@@ -436,7 +436,7 @@ function userConfigLines() {
     .join('; ')
   return [
     `User-configured daily targets: carbohydrate ${t.carbsMin}-${t.carbsMax} g (never go ketogenic), saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, hydration ${t.hydrationMin}-${t.hydrationMax} cc (weight-based for ${hydrationBand().userWeight} kg, never below 2000 cc). Use these as the daily budgets.`,
-    `Exercise targets: post-meal activity ${t.exerciseTarget} min/day (any intensity, dinner first); ${t.aerobicWeekTarget} min/week of moderate-or-higher aerobic activity (vigorous minutes count double) spread over at least ${RULES.exercise.aerobicMinDays} days with no more than ${RULES.exercise.maxRestDays} consecutive days off; strength training ${t.strengthWeekTarget} days/week on non-consecutive days. Intensity is self-rated with the talk test (moderate = can talk but not sing).`,
+    `Exercise targets: post-meal activity ${t.exerciseTarget} min/day (any intensity, dinner first); ${t.aerobicWeekTarget} min/week of moderate-or-higher aerobic activity (vigorous minutes count double) spread over at least ${RULES.exercise.aerobicMinDays} days with no more than ${RULES.exercise.maxRestDays} consecutive days off; strength training ${t.strengthWeekTarget} days/week on non-consecutive days. Intensity is self-rated with the talk test (moderate = can talk but not sing). Each exercise log's time is when the activity started; compare it with meal times to judge post-meal timing.`,
     `Current medication list configured by the user (treat as the current regimen): ${meds || 'none'}.`,
   ]
 }
