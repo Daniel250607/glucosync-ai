@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, reactive, ref } from 'vue'
+import { computed, inject, reactive, ref, watch } from 'vue'
 import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, labMeets, labName, labZh, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, takesSglt2Inhibitor, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
 import { averageIntake, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
@@ -257,12 +257,77 @@ async function runEvaluation() {
     evaluating.value = false
   }
 }
+
+// ---------- sub-tabs: one group of cards at a time (same pattern as the daily tracker) ----------
+const SUB_TAB_KEY = 'glucosync_labs_subtab'
+const SUB_TAB_IDS = ['overview', 'trend', 'records', 'targets']
+function loadSubTab() {
+  try {
+    const v = localStorage.getItem(SUB_TAB_KEY)
+    return SUB_TAB_IDS.includes(v) ? v : 'overview'
+  } catch {
+    return 'overview'
+  }
+}
+const subTab = ref(loadSubTab())
+watch(subTab, (v) => {
+  try {
+    localStorage.setItem(SUB_TAB_KEY, v)
+  } catch {
+    // Remembering the tab is optional.
+  }
+})
+/** Met / judged count over the latest value of each item, for the overview tab badge. */
+const metCount = computed(() => {
+  const statuses = [
+    ...LAB_FIELDS.map((f) => statusOf(f, latestByField.value[f.key]?.value)),
+    ...URINE_QUALITATIVE.map((u) => urineStatus(u)),
+  ].filter((s) => s !== 'none')
+  return { met: statuses.filter((s) => s === 'met').length, total: statuses.length }
+})
+const subTabs = computed(() => [
+  {
+    id: 'overview',
+    label: '🧪 總覽',
+    badge: metCount.value.total ? `達標 ${metCount.value.met}/${metCount.value.total}` : '—',
+    done: metCount.value.total > 0 && metCount.value.met === metCount.value.total,
+  },
+  { id: 'trend', label: '📉 趨勢', badge: props.labs.length ? `${props.labs.length} 次追蹤` : '—', done: false },
+  { id: 'records', label: '🧾 紀錄', badge: latest.value ? latest.value.date.slice(5) : '—', done: false },
+  { id: 'targets', label: '📏 目標/AI', badge: targetsMatch.value ? '已符合' : '可套用', done: targetsMatch.value },
+])
+/** Cards outside the chosen sub-tab are hidden (kept mounted, so half-typed input survives a switch). */
+function subTabClass(id) {
+  return subTab.value === id ? '' : 'hidden'
+}
 </script>
 
 <template>
-  <div class="space-y-4">
-    <!-- Baseline vs targets -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+  <!-- Sub-tabs: phone a row on top; desktop (md+) a column on the left. -->
+  <div class="space-y-4 md:flex md:items-start md:gap-4 md:space-y-0">
+    <nav
+      class="grid grid-cols-4 gap-1 rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200 md:sticky md:top-32 md:w-36 md:shrink-0 md:grid-cols-1"
+      data-testid="lab-subtabs"
+    >
+      <button
+        v-for="t in subTabs"
+        :key="t.id"
+        type="button"
+        class="rounded-xl px-0.5 py-1.5 text-center md:px-3 md:py-2.5 md:text-left"
+        :class="subTab === t.id ? 'bg-teal-600 text-white' : 'text-slate-600 active:bg-slate-100'"
+        :aria-pressed="subTab === t.id"
+        @click="subTab = t.id"
+      >
+        <span class="block whitespace-nowrap text-xs font-semibold md:text-base">{{ t.label }}</span>
+        <span
+          class="block whitespace-nowrap text-[11px] md:text-xs"
+          :class="subTab === t.id ? 'text-teal-50' : t.done ? 'text-teal-600' : 'text-slate-400'"
+        >{{ t.done ? '✓ ' : '' }}{{ t.badge }}</span>
+      </button>
+    </nav>
+    <div class="min-w-0 space-y-4 md:flex-1">
+    <!-- Overview: baseline vs targets -->
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('overview')">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h2 class="font-semibold text-slate-800">🧪 檢驗里程碑</h2>
         <button
@@ -361,42 +426,11 @@ async function runEvaluation() {
       </div>
     </section>
 
-    <!-- Baseline entry -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <details :open="!getBaselineDate()">
-        <summary class="cursor-pointer text-sm font-semibold text-slate-800">📌 基準檢驗值（{{ getBaselineDate() || '尚未設定' }}）</summary>
-        <p class="mt-1 text-xs text-slate-500">個人健康資料只存在你的瀏覽器與私人 Firestore，不會放進程式碼或公開網頁。</p>
-        <label class="mt-3 inline-block cursor-pointer rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700 active:bg-slate-200">
-          📂 從檔案匯入（health_context.md）
-          <input type="file" accept=".md,.txt,text/plain,text/markdown" class="hidden" @change="importBaselineFile" />
-        </label>
-        <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <label class="col-span-2 text-xs text-slate-500 sm:col-span-3">
-            基準檢驗日期
-            <input v-model="baselineForm.date" type="date" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
-          </label>
-          <label v-for="f in LAB_FIELDS" :key="f.key" class="text-xs text-slate-500">
-            {{ labName(f) }} {{ f.unit }}
-            <input v-model="baselineForm.values[f.key]" type="number" step="any" inputmode="decimal" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
-          </label>
-          <label v-for="u in URINE_QUALITATIVE" :key="u.key" class="text-xs text-slate-500">
-            {{ labName(u) }}
-            <input v-model="baselineForm.values[u.key]" placeholder="例如 +" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
-          </label>
-        </div>
-        <p v-if="baselineMsg" class="mt-2 text-sm text-slate-600">{{ baselineMsg }}</p>
-        <div class="mt-3 flex gap-2">
-          <button type="button" class="flex-1 rounded-xl bg-teal-700 py-3 font-semibold text-white active:bg-teal-800" @click="saveBaseline">儲存基準值</button>
-          <button type="button" class="rounded-xl bg-slate-100 px-4 py-3 text-sm text-slate-700" @click="clearBaseline">清除</button>
-        </div>
-      </details>
-    </section>
-
     <!-- Lab trend charts -->
-    <LabTrendChart :labs="labs" :weights="weightList" :height-cm="Number(live.targets.userHeight) || 0" />
+    <LabTrendChart :class="subTabClass('trend')" :labs="labs" :weights="weightList" :height-cm="Number(live.targets.userHeight) || 0" />
 
     <!-- Entry form -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('records')">
       <div class="flex items-center justify-between gap-2">
         <h2 class="font-semibold text-slate-800">🧾 追蹤檢驗結果</h2>
         <button
@@ -473,8 +507,39 @@ async function runEvaluation() {
       </ul>
     </section>
 
+    <!-- Baseline entry (rarely changed, so below the follow-up records) -->
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('records')">
+      <details :open="!getBaselineDate()">
+        <summary class="cursor-pointer text-sm font-semibold text-slate-800">📌 基準檢驗值（{{ getBaselineDate() || '尚未設定' }}）</summary>
+        <p class="mt-1 text-xs text-slate-500">個人健康資料只存在你的瀏覽器與私人 Firestore，不會放進程式碼或公開網頁。</p>
+        <label class="mt-3 inline-block cursor-pointer rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700 active:bg-slate-200">
+          📂 從檔案匯入（health_context.md）
+          <input type="file" accept=".md,.txt,text/plain,text/markdown" class="hidden" @change="importBaselineFile" />
+        </label>
+        <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <label class="col-span-2 text-xs text-slate-500 sm:col-span-3">
+            基準檢驗日期
+            <input v-model="baselineForm.date" type="date" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          </label>
+          <label v-for="f in LAB_FIELDS" :key="f.key" class="text-xs text-slate-500">
+            {{ labName(f) }} {{ f.unit }}
+            <input v-model="baselineForm.values[f.key]" type="number" step="any" inputmode="decimal" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          </label>
+          <label v-for="u in URINE_QUALITATIVE" :key="u.key" class="text-xs text-slate-500">
+            {{ labName(u) }}
+            <input v-model="baselineForm.values[u.key]" placeholder="例如 +" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
+          </label>
+        </div>
+        <p v-if="baselineMsg" class="mt-2 text-sm text-slate-600">{{ baselineMsg }}</p>
+        <div class="mt-3 flex gap-2">
+          <button type="button" class="flex-1 rounded-xl bg-teal-700 py-3 font-semibold text-white active:bg-teal-800" @click="saveBaseline">儲存基準值</button>
+          <button type="button" class="rounded-xl bg-slate-100 px-4 py-3 text-sm text-slate-700" @click="clearBaseline">清除</button>
+        </div>
+      </details>
+    </section>
+
     <!-- Rule-based daily targets -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" data-testid="rule-targets">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('targets')" data-testid="rule-targets">
       <h2 class="font-semibold text-slate-800">📏 依檢驗規則的每日目標</h2>
       <p class="text-xs text-slate-500">依最新檢驗、體重與身高，用固定的指引規則計算；同樣的資料每次結果都相同。規則最後核對：{{ RULES.reviewed }}。</p>
       <dl class="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -494,7 +559,7 @@ async function runEvaluation() {
           <b>運動</b>：每天餐後活動合計 {{ live.targets.exerciseTarget }} 分，不用每餐都做（{{ RULES.exercise.postMealSource }}）；每週中等以上有氧 {{ live.targets.aerobicWeekTarget }} 分、肌力訓練 {{ live.targets.strengthWeekTarget }} 天。依據：{{ RULES.exercise.source }}。不隨檢驗變動，可在設定頁修改。
         </li>
       </ul>
-      <p v-if="ruleResult.notices.length" class="mt-3 text-xs text-amber-700">⚠️ 依檢驗的提醒在上方「檢驗里程碑」表格下面。</p>
+      <p v-if="ruleResult.notices.length" class="mt-3 text-xs text-amber-700">⚠️ 依檢驗的提醒在「🧪 總覽」分頁的檢驗里程碑表格下面。</p>
       <button
         type="button"
         class="mt-3 w-full rounded-xl bg-amber-600 py-3 font-semibold text-white disabled:opacity-60 active:bg-amber-700"
@@ -508,7 +573,7 @@ async function runEvaluation() {
     </section>
 
     <!-- AI evaluation -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('targets')">
       <h2 class="font-semibold text-slate-800">🤖 AI 飲食階段評估</h2>
       <p class="text-xs text-slate-500">根據最新檢驗與近 30 天飲食紀錄，動態調整下一階段飲食方向。</p>
       <button
@@ -559,6 +624,7 @@ async function runEvaluation() {
         <p class="text-xs text-slate-400">AI 建議僅供參考，不能取代醫師診斷；用藥調整請與醫師討論。</p>
       </div>
     </section>
+    </div>
     <ClinicReport v-if="reportOpen" :days="days" :labs="labs" :patient-name="patientName" @close="reportOpen = false" />
   </div>
 </template>

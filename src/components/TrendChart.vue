@@ -532,9 +532,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- One card for the scorecards, then one card per chart (each with its own legend notes). -->
+  <div class="space-y-4">
   <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
     <div class="flex items-center justify-between">
-      <h2 class="font-semibold text-slate-800">📈 趨勢總覽</h2>
+      <h2 class="font-semibold text-slate-800">📈 達成率</h2>
       <div class="flex gap-1">
         <button
           v-for="r in [7, 14, 30]"
@@ -572,43 +574,72 @@ onBeforeUnmount(() => {
     <p v-if="!series.length" class="mt-6 text-center text-sm text-slate-400">
       尚無資料。請先在「今日記錄」分頁記錄飲食、飲水與運動。
     </p>
-    <div :class="{ hidden: !series.length }">
-      <div ref="macroSection" class="mt-4 scroll-mt-24 sm:scroll-mt-32" data-chart="macro">
-        <h3 class="text-sm font-medium text-slate-700">🍚 碳水與飽和脂肪 <span class="text-xs font-normal text-slate-400">(g/日)</span></h3>
-        <p v-if="!hasMacroData" class="mt-1 text-xs text-slate-400">此期間尚無已分析的餐點，碳水與飽和脂肪無資料。</p>
-        <div class="mt-2 h-[26rem] sm:h-96"><canvas ref="macroCanvas" role="img" aria-label="碳水與飽和脂肪趨勢圖" /></div>
-      </div>
-      <div ref="waterSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="water">
-        <h3 class="text-sm font-medium text-slate-700">💧 飲水 <span class="text-xs font-normal text-slate-400">(cc/日)</span></h3>
-        <p v-if="!hasWaterData" class="mt-1 text-xs text-slate-400">此期間尚無飲水紀錄。</p>
-        <div class="mt-2 h-72 sm:h-72"><canvas ref="waterCanvas" role="img" aria-label="飲水趨勢圖" /></div>
-      </div>
-      <div ref="exerciseSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="exercise">
-        <h3 class="text-sm font-medium text-slate-700">🏃 運動 <span class="text-xs font-normal text-slate-400">(分鐘/日，依類別；折線為近 7 天有氧累計)</span></h3>
-        <p v-if="!hasExerciseData" class="mt-1 text-xs text-slate-400">此期間尚無運動紀錄。</p>
-        <div class="mt-2 h-72 sm:h-72"><canvas ref="exerciseCanvas" role="img" aria-label="運動趨勢圖" /></div>
-      </div>
-    </div>
     <details v-if="series.length" class="mt-3 space-y-1 text-xs text-slate-500" data-legend-notes>
-      <summary class="cursor-pointer font-medium text-slate-600">ⓘ 圖例說明（點開看顏色與計算方式）</summary>
+      <summary class="cursor-pointer font-medium text-slate-600">ⓘ 達成率怎麼算</summary>
+      <p>達成率只計算「有記錄該項目」的天數；無資料的日子不算 0，也不計入。徽章 ▲/▼＝與前一段 {{ range }} 天相比的變化（百分點）。點卡片可以跳到對應的圖。</p>
+      <p>「餐後活動」看每天飯後 2 小時內的活動是否 ≥ {{ live.targets.exerciseTarget }} 分（任何強度都算）。</p>
+    </details>
+  </section>
+
+  <!-- Charts stay mounted when there is no data (hidden), so the canvases keep their refs. -->
+  <section
+    ref="macroSection"
+    class="scroll-mt-24 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:scroll-mt-32"
+    :class="{ hidden: !series.length }"
+    data-chart="macro"
+  >
+    <h2 class="font-semibold text-slate-800">🍚 碳水與飽和脂肪 <span class="text-xs font-normal text-slate-400">(g/日)</span></h2>
+    <p v-if="!hasMacroData" class="mt-1 text-xs text-slate-400">此期間尚無已分析的餐點，碳水與飽和脂肪無資料。</p>
+    <div class="mt-2 h-[26rem] sm:h-96"><canvas ref="macroCanvas" role="img" aria-label="碳水與飽和脂肪趨勢圖" /></div>
+    <details class="mt-3 space-y-1 text-xs text-slate-500">
+      <summary class="cursor-pointer font-medium text-slate-600">ⓘ 圖例說明</summary>
       <p>
-        🍚 碳水長條：<span class="legend-dot" :style="{ background: COLORS.carbsOk }"></span>橘＝範圍內 {{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} g、
+        碳水長條：<span class="legend-dot" :style="{ background: COLORS.carbsOk }"></span>橘＝範圍內 {{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} g、
         <span class="legend-dot" :style="{ background: COLORS.carbsHigh }"></span>紅＝超標（&gt; {{ live.targets.carbsMax }} g）、
-        <span class="legend-dot" :style="{ background: COLORS.carbsLow }"></span>黃＝過低（&lt; {{ live.targets.carbsMin }} g，SGLT-2 酮酸風險）；無長條／斷線＝當天未記錄（不算 0，也不計入達成率）。
+        <span class="legend-dot" :style="{ background: COLORS.carbsLow }"></span>黃＝過低（&lt; {{ live.targets.carbsMin }} g，SGLT-2 酮酸風險）；無長條／斷線＝當天未記錄。
       </p>
-      <p>🟣 飽和脂肪紫線（右軸）：淡紫虛線＝建議 ≤ {{ live.targets.satFatMin }} g、紅虛線＝上限 {{ live.targets.satFatMax }} g。</p>
-      <p>💧 飲水：藍色面積＝當日飲水量；淺藍帶＝安全區 {{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} cc（依體重 {{ live.targets.userWeight }} kg，下限不低於 2000 cc）。</p>
+      <p>飽和脂肪紫線（右軸）：淡紫虛線＝建議 ≤ {{ live.targets.satFatMin }} g、紅虛線＝上限 {{ live.targets.satFatMax }} g。點圖例可隱藏/顯示該資料。</p>
+    </details>
+  </section>
+
+  <section
+    ref="waterSection"
+    class="scroll-mt-24 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:scroll-mt-32"
+    :class="{ hidden: !series.length }"
+    data-chart="water"
+  >
+    <h2 class="font-semibold text-slate-800">💧 飲水 <span class="text-xs font-normal text-slate-400">(cc/日)</span></h2>
+    <p v-if="!hasWaterData" class="mt-1 text-xs text-slate-400">此期間尚無飲水紀錄。</p>
+    <div class="mt-2 h-72 sm:h-72"><canvas ref="waterCanvas" role="img" aria-label="飲水趨勢圖" /></div>
+    <details class="mt-3 space-y-1 text-xs text-slate-500">
+      <summary class="cursor-pointer font-medium text-slate-600">ⓘ 圖例說明</summary>
+      <p>藍色面積＝當日飲水量；淺藍帶＝安全區 {{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} cc（依體重 {{ live.targets.userWeight }} kg，下限不低於 2000 cc）。</p>
+    </details>
+  </section>
+
+  <section
+    ref="exerciseSection"
+    class="scroll-mt-24 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:scroll-mt-32"
+    :class="{ hidden: !series.length }"
+    data-chart="exercise"
+  >
+    <h2 class="font-semibold text-slate-800">🏃 運動 <span class="text-xs font-normal text-slate-400">(分鐘/日，依類別；折線為近 7 天有氧累計)</span></h2>
+    <p v-if="!hasExerciseData" class="mt-1 text-xs text-slate-400">此期間尚無運動紀錄。</p>
+    <div class="mt-2 h-72 sm:h-72"><canvas ref="exerciseCanvas" role="img" aria-label="運動趨勢圖" /></div>
+    <details class="mt-3 space-y-1 text-xs text-slate-500">
+      <summary class="cursor-pointer font-medium text-slate-600">ⓘ 圖例說明</summary>
       <p>
-        🏃 運動長條（當日分鐘，依類別堆疊）：<span class="legend-dot" :style="{ background: COLORS.exAerobic }"></span>深綠＝中等以上有氧（費力 1 分鐘算 2 分鐘）、
+        長條（當日分鐘，依類別堆疊）：<span class="legend-dot" :style="{ background: COLORS.exAerobic }"></span>深綠＝中等以上有氧（費力 1 分鐘算 2 分鐘）、
         <span class="legend-dot" :style="{ background: COLORS.exUnrated }"></span>灰＝沒有選強度的有氧（舊紀錄，以中等計算）、
         <span class="legend-dot" :style="{ background: COLORS.exLight }"></span>淺綠＝輕度活動、
         <span class="legend-dot" :style="{ background: COLORS.exStrength }"></span>紫＝肌力。
-        <span class="legend-dot" :style="{ background: COLORS.exWeek }"></span>橘線（右軸）＝往回 7 天的有氧累計，虛線＝每週目標 {{ live.targets.aerobicWeekTarget }} 分。
-        「餐後活動」達成率看每天飯後 2 小時內的活動是否 ≥ {{ live.targets.exerciseTarget }} 分（任何強度都算）。
       </p>
-      <p>達成率只計算「有記錄該項目」的天數；徽章 ▲/▼＝與前一段 {{ range }} 天相比的變化（百分點）。點圖例可隱藏/顯示該資料。</p>
+      <p>
+        <span class="legend-dot" :style="{ background: COLORS.exWeek }"></span>橘線（右軸）＝往回 7 天的有氧累計，虛線＝每週目標 {{ live.targets.aerobicWeekTarget }} 分。點圖例可隱藏/顯示該資料。
+      </p>
     </details>
   </section>
+  </div>
 </template>
 
 <style scoped>
