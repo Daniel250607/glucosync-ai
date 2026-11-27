@@ -486,11 +486,11 @@ function subTabClass(id) {
       </button>
       </template>
 
-      <!-- History: one line per record, details folded. -->
+      <!-- History: newest record open, older ones one line each with details folded. -->
       <p v-if="!labs.length" class="mt-2 text-xs text-slate-400">還沒有追蹤檢驗紀錄。</p>
       <ul v-else class="mt-3 divide-y divide-slate-100 text-sm" data-testid="lab-history">
-        <li v-for="l in [...labs].reverse()" :key="l.date" class="py-1.5">
-          <details>
+        <li v-for="(l, i) in [...labs].reverse()" :key="l.date" class="py-1.5">
+          <details :open="i === 0">
             <summary class="cursor-pointer text-slate-700">
               <span class="font-medium text-slate-800">{{ l.date }}</span>
               <span class="ml-2 text-xs text-slate-500">{{ labRecordItems(l).length }} 項</span>
