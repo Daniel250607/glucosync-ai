@@ -8,6 +8,8 @@ export const TARGETS = {
   userWeight: 70,
   // Height (cm) for the standard weight range (BMI 18.5-24). 0 = not set.
   userHeight: 0,
+  // Sex for sex-specific lab standards (HDL-C, creatinine, uric acid): 0 not set, 1 male, 2 female.
+  userSex: 0,
   hydrationMin: 2100,
   hydrationMax: 2660,
   // Post-dinner marching-in-place target duration (min).
@@ -162,25 +164,75 @@ export function medIdFromName(name) {
 // Lab field definitions and follow-up targets. Baseline values are PERSONAL health data: they are
 // never shipped in the code but entered by the user (section `labBaseline` of the custom config),
 // and exposed through the reactive `baseline` getters below (null until entered).
-// `dir` = "lt" means lower is better (value must be below `target`);
 // `label` is the English name used on lab reports and in AI prompts; `zh` is the Chinese medical name and
 // `common` the everyday name (empty when it is the same as `zh`).
+// `std` is the standard a value is judged against:
+//   { dir: 'lt', target, label }      lower is better, met when value < target
+//   { dir: 'gt', target, label }      higher is better, met when value >= target
+//   { dir: 'range', min, max, label } met when min <= value <= max
+//   { bySex: { male: {...}, female: {...} } } when the standard differs by sex (targets.userSex: 1 male, 2 female)
+// HbA1c, AC Sugar, LDL-C, TG and UAcr are follow-up targets; the others are common adult reference values
+// (each lab's own reference range may differ slightly).
 const LAB_FIELD_DEFS = [
-  { key: 'hba1c', label: 'HbA1c', zh: '糖化血色素', common: '三個月平均血糖', unit: '%', target: 7.5, targetLabel: '< 7.0-7.5', dir: 'lt' },
-  { key: 'ac_sugar', label: 'AC Sugar', zh: '空腹血漿葡萄糖', common: '空腹血糖', unit: 'mg/dL', target: 130, targetLabel: '< 110-130', dir: 'lt' },
-  { key: 'ldl', label: 'LDL-C', zh: '低密度脂蛋白膽固醇', common: '壞膽固醇', unit: 'mg/dL', target: 100, targetLabel: '< 100', dir: 'lt' },
-  { key: 'tg', label: 'TG', zh: '三酸甘油酯', common: '中性脂肪', unit: 'mg/dL', target: 150, targetLabel: '< 150', dir: 'lt' },
-  { key: 't_cho', label: 'T-Cho', zh: '總膽固醇', common: '', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'hdl', label: 'HDL-C', zh: '高密度脂蛋白膽固醇', common: '好膽固醇', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'uacr', label: 'UAcr', zh: '尿液白蛋白/肌酸酐比值', common: '尿蛋白比值', unit: '', target: 30, targetLabel: '< 30', dir: 'lt' },
-  { key: 'micro_albumin', label: 'Micro-Albumin', zh: '尿液微量白蛋白', common: '微量尿蛋白', unit: 'mg/L', target: null, targetLabel: '—', dir: null },
-  { key: 'creatinine', label: 'Creatinine', zh: '血清肌酸酐', common: '腎功能指數', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'egfr', label: 'eGFR', zh: '估算腎絲球過濾率', common: '腎臟過濾率', unit: '', target: null, targetLabel: '—', dir: null },
-  { key: 'bun', label: 'BUN', zh: '血中尿素氮', common: '尿素氮', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'uric_acid', label: 'Uric Acid', zh: '尿酸', common: '', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 's_gpt', label: 'S-GPT', zh: '丙胺酸轉胺酶', common: '肝功能指數', unit: 'U/L', target: null, targetLabel: '—', dir: null },
-  { key: 'u_sg', label: 'U-Specific Gravity', zh: '尿液比重', common: '尿比重', unit: '', target: null, targetLabel: '1.005-1.030', dir: null },
+  { key: 'hba1c', label: 'HbA1c', zh: '糖化血色素', common: '三個月平均血糖', unit: '%', std: { dir: 'lt', target: 7.5, label: '< 7.0-7.5' } },
+  { key: 'ac_sugar', label: 'AC Sugar', zh: '空腹血漿葡萄糖', common: '空腹血糖', unit: 'mg/dL', std: { dir: 'lt', target: 130, label: '< 110-130' } },
+  { key: 'ldl', label: 'LDL-C', zh: '低密度脂蛋白膽固醇', common: '壞膽固醇', unit: 'mg/dL', std: { dir: 'lt', target: 100, label: '< 100' } },
+  { key: 'tg', label: 'TG', zh: '三酸甘油酯', common: '中性脂肪', unit: 'mg/dL', std: { dir: 'lt', target: 150, label: '< 150' } },
+  { key: 't_cho', label: 'T-Cho', zh: '總膽固醇', common: '', unit: 'mg/dL', std: { dir: 'lt', target: 200, label: '< 200' } },
+  {
+    key: 'hdl', label: 'HDL-C', zh: '高密度脂蛋白膽固醇', common: '好膽固醇', unit: 'mg/dL',
+    std: { bySex: { male: { dir: 'gt', target: 40, label: '≥ 40' }, female: { dir: 'gt', target: 50, label: '≥ 50' } } },
+  },
+  { key: 'uacr', label: 'UAcr', zh: '尿液白蛋白/肌酸酐比值', common: '尿蛋白比值', unit: '', std: { dir: 'lt', target: 30, label: '< 30' } },
+  { key: 'micro_albumin', label: 'Micro-Albumin', zh: '尿液微量白蛋白', common: '微量尿蛋白', unit: 'mg/L', std: { dir: 'lt', target: 30, label: '< 30' } },
+  {
+    key: 'creatinine', label: 'Creatinine', zh: '血清肌酸酐', common: '腎功能指數', unit: 'mg/dL',
+    std: { bySex: { male: { dir: 'range', min: 0.7, max: 1.3, label: '0.7-1.3' }, female: { dir: 'range', min: 0.6, max: 1.1, label: '0.6-1.1' } } },
+  },
+  { key: 'egfr', label: 'eGFR', zh: '估算腎絲球過濾率', common: '腎臟過濾率', unit: '', std: { dir: 'gt', target: 90, label: '≥ 90' } },
+  { key: 'bun', label: 'BUN', zh: '血中尿素氮', common: '尿素氮', unit: 'mg/dL', std: { dir: 'range', min: 7, max: 20, label: '7-20' } },
+  {
+    key: 'uric_acid', label: 'Uric Acid', zh: '尿酸', common: '', unit: 'mg/dL',
+    std: { bySex: { male: { dir: 'lt', target: 7, label: '< 7.0' }, female: { dir: 'lt', target: 6, label: '< 6.0' } } },
+  },
+  { key: 's_gpt', label: 'S-GPT', zh: '丙胺酸轉胺酶', common: '肝功能指數', unit: 'U/L', std: { dir: 'lt', target: 40, label: '< 40' } },
+  { key: 'u_sg', label: 'U-Specific Gravity', zh: '尿液比重', common: '尿比重', unit: '', std: { dir: 'range', min: 1.005, max: 1.03, label: '1.005-1.030' } },
 ]
+
+/** Sex setting values (targets.userSex). 0 = not set. */
+export const SEX_OPTIONS = [
+  { value: 0, label: '未設定' },
+  { value: 1, label: '男' },
+  { value: 2, label: '女' },
+]
+
+/**
+ * Effective standard of a lab field definition for a sex (1 male, 2 female, else not set):
+ * { dir, target, min, max, label, needsSex }. Without a sex, a sex-dependent standard lists both
+ * labels and has no numbers, so nothing is judged.
+ */
+export function resolveLabStandard(def, sex) {
+  const std = def?.std
+  if (!std) return { dir: null, target: null, min: null, max: null, label: '—', needsSex: false }
+  const pick = (s) => ({ dir: s.dir, target: s.target ?? null, min: s.min ?? null, max: s.max ?? null, label: s.label, needsSex: false })
+  if (!std.bySex) return pick(std)
+  const n = Number(sex)
+  if (n === 1) return pick(std.bySex.male)
+  if (n === 2) return pick(std.bySex.female)
+  const { male, female } = std.bySex
+  return { dir: male.dir, target: null, min: null, max: null, label: `${male.label}（男）/ ${female.label}（女）`, needsSex: true }
+}
+
+/** true = meets the field's standard, false = does not, null = no standard / no value. */
+export function labMeets(f, value) {
+  if (value == null || value === '' || !f) return null
+  const v = Number(value)
+  if (!Number.isFinite(v)) return null
+  if (f.dir === 'lt' && f.target != null) return v < f.target
+  if (f.dir === 'gt' && f.target != null) return v >= f.target
+  if (f.dir === 'range' && f.min != null && f.max != null) return v >= f.min && v <= f.max
+  return null
+}
 
 // Qualitative urine definitions (baseline entered by the user, not numeric).
 const URINE_DEFS = [
@@ -200,11 +252,20 @@ export function labName(f) {
   return zh ? `${f.label} ${zh}` : f?.label || ''
 }
 
-const withBaseline = (def) =>
-  Object.defineProperty({ ...def }, 'baseline', {
+const withBaseline = (def) => {
+  const f = Object.defineProperty({ ...def }, 'baseline', {
     enumerable: true,
     get: () => live.labBaseline.values[def.key] ?? null,
   })
+  if (def.std) {
+    // Reactive: follows the sex setting (targets.userSex).
+    for (const k of ['dir', 'target', 'min', 'max', 'needsSex']) {
+      Object.defineProperty(f, k, { enumerable: true, get: () => resolveLabStandard(def, live.targets.userSex)[k] })
+    }
+    Object.defineProperty(f, 'targetLabel', { enumerable: true, get: () => resolveLabStandard(def, live.targets.userSex).label })
+  }
+  return f
+}
 
 export const LAB_FIELDS = LAB_FIELD_DEFS.map(withBaseline)
 export const URINE_QUALITATIVE = URINE_DEFS.map(withBaseline)
@@ -403,6 +464,7 @@ export function sanitizeCustomConfig(cfg) {
     const t = {}
     for (const k of Object.keys(TARGETS)) {
       const v = Number(cfg.targets[k])
+      if (k === 'userSex' && ![0, 1, 2].includes(v)) continue
       if (cfg.targets[k] !== '' && cfg.targets[k] != null && Number.isFinite(v) && v >= 0) t[k] = v
     }
     if (Object.keys(t).length) out.targets = t

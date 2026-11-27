@@ -4,7 +4,7 @@
 // user input, Firestore or an imported backup, so EVERY value is sanitized before it reaches a prompt:
 // numbers must be finite and inside a plausible range, urine qualitative values must be one of a
 // fixed scale, dates must be real YYYY-MM-DD dates. Free text (e.g. `note`) is never injected.
-import { getBaselineDate, LAB_FIELDS, URINE_QUALITATIVE } from './presets.js'
+import { getBaselineDate, LAB_FIELDS, labMeets, URINE_QUALITATIVE } from './presets.js'
 
 /** Plausible physical ranges; values outside are treated as typos and ignored. */
 const NUMERIC_LIMITS = {
@@ -23,12 +23,6 @@ const NUMERIC_LIMITS = {
   s_gpt: [1, 3000],
   u_sg: [1.0, 1.06],
 }
-
-/** Fields where a HIGHER value is better (LAB_FIELDS has no `dir` for them). */
-const HIGHER_IS_BETTER = new Set(['hdl', 'egfr'])
-
-/** Reference range for urine specific gravity (status only). */
-const U_SG_RANGE = [1.005, 1.03]
 
 /** Ordinal urine dipstick scale (lower is better). */
 const QUAL_SCALE = ['-', '±', '+', '++', '+++', '++++']
@@ -108,15 +102,18 @@ function numericTrend(f, latest, baseline) {
   const d = latest - baseline
   const pct = baseline ? (d / baseline) * 100 : 0
   if (Math.abs(pct) < 1) return { delta: round2(d), pct: round2(pct), trend: 'unchanged' }
-  const better = f.dir === 'lt' ? d < 0 : HIGHER_IS_BETTER.has(f.key) ? d > 0 : null
+  // Direction of "better": lower for 'lt' standards, higher for 'gt'; ranges have no direction.
+  const better = f.dir === 'lt' ? d < 0 : f.dir === 'gt' ? d > 0 : null
   const trend = better == null ? (d > 0 ? 'higher' : 'lower') : better ? 'improved' : 'worsened'
   return { delta: round2(d), pct: round2(pct), trend }
 }
 
 function numericStatus(f, v) {
-  if (f.key === 'u_sg') return v < U_SG_RANGE[0] || v > U_SG_RANGE[1] ? 'out of range (1.005-1.030)' : 'in range'
-  if (f.dir !== 'lt' || f.target == null) return 'no target'
-  if (v < f.target) return 'target met'
+  const met = labMeets(f, v)
+  if (met == null) return f.needsSex ? 'no target (sex not set)' : 'no target'
+  if (f.dir === 'range') return met ? 'in range' : `out of range (${f.targetLabel})`
+  if (met) return 'target met'
+  if (f.dir === 'gt') return 'below target (not met)'
   return v <= f.target * 1.1 ? 'near target (not met)' : 'above target (not met)'
 }
 

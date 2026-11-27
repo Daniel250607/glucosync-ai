@@ -124,7 +124,9 @@ const STATUS_ZH = {
   'target met': '已達標',
   'near target (not met)': '接近目標',
   'above target (not met)': '未達標',
+  'below target (not met)': '未達標',
   'no target': '—',
+  'no target (sex not set)': '—（未設定性別）',
   'in range': '範圍內',
   negative: '陰性',
   trace: '微量',
@@ -190,7 +192,7 @@ export function buildReport({ days, labs, rangeDays = 30, now = new Date() }) {
     latestDate: r.source === 'follow-up' ? r.latestDate : null,
     target: r.targetLabel || '—',
     // Without a follow-up the status describes the baseline value; label it so it is not read as current.
-    status: r.source === 'follow-up' || labStatusZh(r.status) === '—' ? labStatusZh(r.status) : `${labStatusZh(r.status)}（基準）`,
+    status: r.source === 'follow-up' || labStatusZh(r.status).startsWith('—') ? labStatusZh(r.status) : `${labStatusZh(r.status)}（基準）`,
     trend: labTrendZh(r.trend),
     delta: r.kind === 'numeric' && r.source === 'follow-up' ? r.delta : null,
   }))

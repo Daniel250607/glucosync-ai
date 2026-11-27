@@ -6,7 +6,7 @@
 // Charts are destroyed before every re-render and on unmount.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Chart, LineController, LineElement, PointElement, LinearScale, Legend, Tooltip, Filler } from 'chart.js'
-import { BMI_NORMAL, bmiOf, getBaselineDate, LAB_FIELDS, labName, sanitizeWeight, weightRangeFromHeight } from '../data/presets.js'
+import { BMI_NORMAL, bmiOf, getBaselineDate, LAB_FIELDS, labMeets, labName, sanitizeWeight, weightRangeFromHeight } from '../data/presets.js'
 import { sanitizeLabDate, sanitizeLabNumber } from '../data/labContext.js'
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, Legend, Tooltip, Filler)
@@ -18,8 +18,6 @@ const props = defineProps({
 })
 
 const CHART_KEYS = ['hba1c', 'ldl', 'tg', 'uacr', 'ac_sugar', 'egfr']
-/** Reference lines for fields without a numeric target in LAB_FIELDS (shown as "參考", not a goal). */
-const REFERENCE = { egfr: { value: 90, label: '參考 ≥ 90（正常腎功能）', higherIsBetter: true } }
 const COLORS = { line: '#0f766e', met: '#059669', unmet: '#e11d48', neutral: '#0f766e', target: 'rgba(5,150,105,0.9)', band: 'rgba(16,185,129,0.10)' }
 const DAY_MS = 86400000
 
@@ -68,10 +66,8 @@ function setCanvas(key, el) {
 }
 
 function labPointColor(f, v) {
-  if (f.dir === 'lt' && f.target != null) return v < f.target ? COLORS.met : COLORS.unmet
-  const ref = REFERENCE[f.key]
-  if (ref) return v >= ref.value ? COLORS.met : COLORS.unmet
-  return COLORS.neutral
+  const met = labMeets(f, v)
+  return met == null ? COLORS.neutral : met ? COLORS.met : COLORS.unmet
 }
 
 /**
@@ -129,7 +125,7 @@ function lineChartConfig({ pts, label, unit, pointColor, lines = [], yValues = [
       maintainAspectRatio: false,
       interaction: { mode: 'nearest', axis: 'x', intersect: false },
       plugins: {
-        legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8, font: { size: 11 } } },
+        legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8, font: { size: 11 }, filter: (item) => Boolean(item.text) } },
         tooltip: {
           filter: (item) => !item.dataset.isThreshold,
           callbacks: {
@@ -158,8 +154,12 @@ function lineChartConfig({ pts, label, unit, pointColor, lines = [], yValues = [
 function labConfig(f) {
   const unit = f.unit || ''
   const lines = []
-  if (f.dir === 'lt' && f.target != null) lines.push({ value: f.target, label: `目標 ${f.targetLabel}${unit ? ` ${unit}` : ''}`, fill: 'origin' })
-  else if (REFERENCE[f.key]) lines.push({ value: REFERENCE[f.key].value, label: REFERENCE[f.key].label })
+  const u = unit ? ` ${unit}` : ''
+  if (f.dir === 'lt' && f.target != null) lines.push({ value: f.target, label: `目標 ${f.targetLabel}${u}`, fill: 'origin' })
+  else if (f.dir === 'gt' && f.target != null) lines.push({ value: f.target, label: `標準 ${f.targetLabel}${u}`, fill: 'end' })
+  else if (f.dir === 'range' && f.min != null && f.max != null) {
+    lines.push({ value: f.min, label: `標準 ${f.targetLabel}${u}` }, { value: f.max, label: '', fill: '-1' })
+  }
   return lineChartConfig({
     pts: seriesByField.value[f.key] || [],
     label: `${f.label}${unit ? ` (${unit})` : ''}`,
@@ -168,9 +168,8 @@ function labConfig(f) {
     lines,
     yValues: lines.map((l) => l.value),
     tooltipLabel: (v) => {
-      let status = ''
-      if (f.dir === 'lt' && f.target != null) status = v < f.target ? '已達標' : '未達標'
-      else if (REFERENCE[f.key]) status = v >= REFERENCE[f.key].value ? '參考範圍內' : '低於參考'
+      const met = labMeets(f, v)
+      const status = met == null ? '' : met ? '已達標' : '未達標'
       return `${labName(f)}：${v}${unit ? ` ${unit}` : ''}${status ? `（${status}）` : ''}`
     },
   })
@@ -262,7 +261,7 @@ const latestWeight = computed(() => weightSeries.value[weightSeries.value.length
     <div v-else class="mt-3 grid gap-4 md:grid-cols-2">
       <div v-for="f in chartFields" :key="f.key" :data-lab-chart="f.key">
         <h3 class="text-sm font-medium text-slate-700">
-          {{ labName(f) }} <span class="text-xs font-normal text-slate-400">{{ f.unit }}{{ f.target != null ? ` · 目標 ${f.targetLabel}` : '' }}</span>
+          {{ labName(f) }} <span class="text-xs font-normal text-slate-400">{{ f.unit }}{{ f.targetLabel && f.targetLabel !== '—' ? ` · 標準 ${f.targetLabel}` : '' }}</span>
         </h3>
         <div class="mt-1 h-56"><canvas :ref="(el) => setCanvas(f.key, el)" role="img" :aria-label="labName(f) + ' 趨勢圖'" /></div>
       </div>

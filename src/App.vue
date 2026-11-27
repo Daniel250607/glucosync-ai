@@ -58,6 +58,7 @@ import {
   recordWeight,
   resetCustom,
   sanitizeWeight,
+  SEX_OPTIONS,
   updateCustom,
   weightRangeFromHeight,
 } from './data/presets.js'
@@ -1549,6 +1550,16 @@ const qrCountdownLabel = computed(() => {
               class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800"
               :class="f.readonly ? 'bg-slate-50 text-slate-600' : ''"
             />
+          </label>
+          <label class="text-xs text-slate-500">
+            性別（檢驗標準用）
+            <select
+              v-model.number="draft.targets.userSex"
+              data-testid="settings-sex"
+              class="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2.5 text-base text-slate-800"
+            >
+              <option v-for="o in SEX_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </label>
         </div>
         <p class="mt-1 text-xs text-slate-400">預設：碳水 130-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。碳水與飽和脂肪可在「檢驗」頁依檢驗規則一鍵套用。</p>

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, labName, labZh, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, labMeets, labName, labZh, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
 import { averageIntake, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
 import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
@@ -35,8 +35,8 @@ const latestByField = computed(() => {
 })
 
 function statusOf(field, value) {
-  if (value == null || value === '' || field.target == null) return 'none'
-  return Number(value) < field.target ? 'met' : 'unmet'
+  const met = labMeets(field, value)
+  return met == null ? 'none' : met ? 'met' : 'unmet'
 }
 const STATUS_STYLE = {
   met: 'bg-emerald-100 text-emerald-800',
@@ -264,7 +264,7 @@ async function runEvaluation() {
             <tr class="text-left text-xs text-slate-400">
               <th class="py-1 pr-2 font-medium">項目</th>
               <th class="py-1 pr-2 text-right font-medium">基準</th>
-              <th class="py-1 pr-2 text-right font-medium">目標</th>
+              <th class="py-1 pr-2 text-right font-medium">目標 / 標準</th>
               <th class="py-1 pr-2 text-right font-medium">最新</th>
               <th class="py-1 text-right font-medium">狀態</th>
             </tr>
@@ -297,6 +297,10 @@ async function runEvaluation() {
           </tbody>
         </table>
       </div>
+      <p class="mt-2 text-xs text-slate-400" data-testid="lab-standard-note">
+        HbA1c、空腹血糖、LDL-C、TG、UAcr 是追蹤目標；其他項目是一般成人參考值，各醫院的參考範圍可能略有不同，以檢驗單為準。
+        <template v-if="LAB_FIELDS.some((f) => f.needsSex)">HDL-C、肌酸酐、尿酸的標準男女不同，請在設定頁選擇性別後才會判斷。</template>
+      </p>
     </section>
 
     <!-- Baseline entry -->
