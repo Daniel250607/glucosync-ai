@@ -414,6 +414,17 @@ function profileFor(type) {
   return { ...base, mode: o.mode, category: o.category, repsPerMin: o.repsPerMin, met: o.met, metEstimated: false, term: o.term, desc: o.desc }
 }
 const currentProfile = computed(() => profileFor(exerciseForm.type))
+/**
+ * Name shown for an exercise type: the professional term when set, else the everyday name.
+ * The everyday name stays the stored key (quick-select list, profiles, logs), so old logs keep matching.
+ */
+function exerciseDisplayName(type) {
+  return profileFor(type).term || type
+}
+/** Same for a saved log: its stored term, else the quick-select's current term, else the everyday name. */
+function logDisplayName(log) {
+  return log?.term || exerciseProfile(log?.type).term || log?.type || ''
+}
 const currentCategory = computed(() => currentProfile.value.category)
 const currentMet = computed(() => currentProfile.value.met || estimateMet(currentCategory.value, exerciseForm.intensity))
 const repsActualPreview = computed(() =>
@@ -506,7 +517,7 @@ async function identifyOtherExercise() {
       // Already a quick-select: use the saved settings instead of a second profile with the same name.
       selectExerciseType(r.name)
       otherProfile.value = null
-      showToast(`快選已有「${r.name}」，已直接選取`)
+      showToast(`快選已有「${exerciseDisplayName(r.name)}」，已直接選取`)
       return
     }
     otherProfile.value = { ...r, type: r.name, desc }
@@ -534,7 +545,7 @@ function saveOtherAsPreset() {
   })
   exerciseOtherOpen.value = false
   otherProfile.value = null
-  offerUndo(`已把「${o.type}」加入運動快選`, () => deleteExerciseTypePreset(o.type))
+  offerUndo(`已把「${o.term || o.type}」加入運動快選`, () => deleteExerciseTypePreset(o.type))
 }
 const exerciseEditMode = ref(false)
 const exerciseManageError = ref('')
@@ -615,7 +626,7 @@ function addExerciseLog(quickMin = null) {
   exerciseForm.postMeal = null
   const amount = entry.mode === 'reps' ? `${entry.reps} 下 × ${entry.sets} 組` : `${entry.actual_min} 分`
   const entryId = entry.id
-  offerUndo(`已記錄 ${entry.type} ${amount}`, () => {
+  offerUndo(`已記錄 ${logDisplayName(entry)} ${amount}`, () => {
     // Remove exactly that entry (by its unique id); no-op if it was already deleted.
     if (!(props.day.exercise_logs || []).some((x) => x && x.id === entryId)) return
     removeExerciseLog(entryId)
@@ -1768,9 +1779,10 @@ function subTabClass(id) {
             type="button"
             class="rounded-full border px-3 py-1 text-xs transition-colors"
             :class="exerciseForm.type === t ? 'border-teal-600 bg-teal-600 text-white font-medium' : 'border-slate-300 bg-white text-slate-700'"
+            :title="exerciseDisplayName(t) !== t ? `一般用語：${t}` : undefined"
             @click="selectExerciseType(t)"
           >
-            {{ t }}
+            {{ exerciseDisplayName(t) }}
           </button>
           <button
             type="button"
@@ -1806,8 +1818,8 @@ function subTabClass(id) {
             class="rounded-lg bg-indigo-50 p-2 text-xs text-indigo-900 ring-1 ring-indigo-200"
           >
             <p>
-              <span class="font-medium">{{ otherProfile.type }}</span>
-              <template v-if="otherProfile.term && otherProfile.term !== otherProfile.type"> · 專業用語：{{ otherProfile.term }}</template>
+              <span class="font-medium">{{ otherProfile.term || otherProfile.type }}</span>
+              <template v-if="otherProfile.term && otherProfile.term !== otherProfile.type"> · 一般用語：{{ otherProfile.type }}</template>
             </p>
             <p class="mt-0.5 text-indigo-800">
               {{ CATEGORY_LABEL[otherProfile.category] }} · 記錄{{ MODE_LABEL[otherProfile.mode] }} · MET {{ otherProfile.met }}<template v-if="otherProfile.reason"> · {{ otherProfile.reason }}</template>
@@ -1832,7 +1844,7 @@ function subTabClass(id) {
             類別：{{ CATEGORY_LABEL[currentCategory] }}
           </span>
           <span v-if="!customExerciseType && currentProfile.term && currentProfile.term !== exerciseForm.type" class="text-[11px] text-slate-500">
-            專業用語：{{ currentProfile.term }}
+            一般用語：{{ exerciseForm.type }}
           </span>
           <span class="ml-auto">記錄方式</span>
           <div class="flex gap-1">
@@ -2024,8 +2036,8 @@ function subTabClass(id) {
                 @pointercancel="endExerciseDrag"
               >⠿</span>
               <span class="min-w-0 flex-1 truncate">
-                <span class="font-medium text-slate-800">{{ t }}</span>
-                <span v-if="exerciseProfile(t).term && exerciseProfile(t).term !== t" class="ml-1.5 text-slate-500">{{ exerciseProfile(t).term }}</span>
+                <span class="font-medium text-slate-800">{{ exerciseDisplayName(t) }}</span>
+                <span v-if="exerciseDisplayName(t) !== t" class="ml-1.5 text-slate-500">{{ t }}</span>
               </span>
               <button
                 type="button"
@@ -2122,7 +2134,9 @@ function subTabClass(id) {
             </button>
           </div>
           <div v-for="s in profileSuggestions" :key="s.type" class="rounded-lg bg-white/70 p-2">
-            <p class="font-medium text-indigo-950">{{ s.type }}</p>
+            <p class="font-medium text-indigo-950">
+              {{ exerciseDisplayName(s.type) }}<span v-if="exerciseDisplayName(s.type) !== s.type" class="ml-1.5 font-normal text-indigo-700">{{ s.type }}</span>
+            </p>
             <p v-if="s.busy" class="mt-0.5">評估中…</p>
             <p v-else-if="s.error" class="mt-0.5 text-rose-700">{{ s.error }}</p>
             <template v-else>
@@ -2188,15 +2202,6 @@ function subTabClass(id) {
             <template v-else>
               <p class="font-medium">AI 找到的名稱（可以修改，按「加入快選」才會儲存）</p>
               <label class="mt-1.5 flex items-center gap-2">
-                <span class="w-16 shrink-0">一般用語</span>
-                <input
-                  v-model="newTypeLookup.name"
-                  type="text"
-                  :maxlength="EXERCISE_NAME_MAX"
-                  class="min-w-0 flex-1 rounded border border-indigo-200 bg-white px-2 py-1 text-sm text-slate-800"
-                />
-              </label>
-              <label class="mt-1 flex items-center gap-2">
                 <span class="w-16 shrink-0">專業用語</span>
                 <input
                   v-model="newTypeLookup.term"
@@ -2205,6 +2210,16 @@ function subTabClass(id) {
                   class="min-w-0 flex-1 rounded border border-indigo-200 bg-white px-2 py-1 text-sm text-slate-800"
                 />
               </label>
+              <label class="mt-1 flex items-center gap-2">
+                <span class="w-16 shrink-0">一般用語</span>
+                <input
+                  v-model="newTypeLookup.name"
+                  type="text"
+                  :maxlength="EXERCISE_NAME_MAX"
+                  class="min-w-0 flex-1 rounded border border-indigo-200 bg-white px-2 py-1 text-sm text-slate-800"
+                />
+              </label>
+              <p class="mt-1 text-[11px] text-indigo-700">快選按鈕與紀錄顯示專業用語；沒填專業用語時顯示一般用語。</p>
               <p class="mt-1.5">
                 記錄：{{ MODE_LABEL[newTypeLookup.mode] }}<template v-if="newTypeLookup.mode === 'reps'"> · 每分鐘 {{ newTypeLookup.repsPerMin }} 下</template>
                 · 類別 {{ CATEGORY_LABEL[newTypeLookup.category] }} · MET {{ newTypeLookup.met }}
@@ -2251,8 +2266,8 @@ function subTabClass(id) {
           <li v-for="log in exerciseLogsSorted" :key="log.id" class="flex items-start gap-2 py-1.5 text-sm">
             <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
             <div class="min-w-0 flex-1">
-              <span class="font-medium text-slate-800">{{ log.type }}</span>
-              <span v-if="log.term && log.term !== log.type" class="ml-1 text-xs text-slate-500">（{{ log.term }}）</span>
+              <span class="font-medium text-slate-800">{{ logDisplayName(log) }}</span>
+              <span v-if="logDisplayName(log) !== log.type" class="ml-1 text-xs text-slate-500">（{{ log.type }}）</span>
               <span
                 v-if="isRepsLog(log)"
                 class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
