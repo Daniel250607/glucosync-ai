@@ -78,6 +78,7 @@ import {
   normalizeThinkingBudget,
   targetSafetyWarnings,
 } from './services/gemini.js'
+import { isModelListStale, loadModelListCache, modelChoices, refreshModelList } from './services/modelList.js'
 
 const tabs = [
   { id: 'daily', label: '今日記錄', icon: '📝' },
@@ -372,6 +373,56 @@ function loadAiSettingsForm(s = loadSettings()) {
   settings.grokApiKey = s.grokApiKey || ''
   settings.grokModel = modelOverride(s.grokModel, DEFAULT_GROK_MODEL)
 }
+// ---------- AI model drop-down (list fetched from the provider, cached on this device) ----------
+const modelLists = reactive({ gemini: loadModelListCache('gemini'), grok: loadModelListCache('grok') })
+const modelListState = reactive({ busy: false, error: '' })
+const aiProviderKey = computed(() => (settings.aiProvider === 'grok' ? settings.grokApiKey : settings.geminiApiKey).trim())
+const aiModelField = computed(() => (settings.aiProvider === 'grok' ? 'grokModel' : 'geminiModel'))
+const aiDefaultModel = computed(() => (settings.aiProvider === 'grok' ? DEFAULT_GROK_MODEL : DEFAULT_GEMINI_MODEL))
+const aiModelChoices = computed(() => {
+  const provider = settings.aiProvider === 'grok' ? 'grok' : 'gemini'
+  return modelChoices({
+    fetched: modelLists[provider]?.models,
+    fallback: provider === 'grok' ? GROK_MODEL_OPTIONS : GEMINI_MODEL_OPTIONS,
+    defaultModel: aiDefaultModel.value,
+    current: modelOverride(settings[aiModelField.value], aiDefaultModel.value),
+  })
+})
+/** Selected value: '' = follow the app default. */
+const aiModelSelect = computed({
+  get: () => modelOverride(settings[aiModelField.value], aiDefaultModel.value),
+  set: (v) => {
+    settings[aiModelField.value] = modelOverride(v, aiDefaultModel.value)
+  },
+})
+const aiModelListInfo = computed(() => {
+  const entry = modelLists[settings.aiProvider === 'grok' ? 'grok' : 'gemini']
+  if (!entry) return '尚未查詢，目前顯示 App 內建的清單。'
+  return `${entry.models.length} 個模型，${new Date(entry.at).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' })} 查詢。`
+})
+async function refreshAiModels({ onlyIfStale = false } = {}) {
+  const provider = settings.aiProvider === 'grok' ? 'grok' : 'gemini'
+  const key = aiProviderKey.value
+  if (!key || modelListState.busy) return
+  if (onlyIfStale && !isModelListStale(modelLists[provider])) return
+  modelListState.busy = true
+  modelListState.error = ''
+  try {
+    modelLists[provider] = await refreshModelList(provider, key)
+  } catch (e) {
+    modelListState.error = `查詢模型清單失敗：${e.message}`
+  } finally {
+    modelListState.busy = false
+  }
+}
+watch(
+  () => [showSettings.value, settings.aiProvider],
+  ([open]) => {
+    modelListState.error = ''
+    if (open) refreshAiModels({ onlyIfStale: true })
+  },
+)
+
 const settingsError = ref('')
 const pendingPairBanner = ref(false)
 const qrPair = reactive({
@@ -1361,31 +1412,6 @@ const qrCountdownLabel = computed(() => {
                 </div>
               </label>
               <p class="mt-1 text-xs text-slate-400">在 xAI 主控台建立「Grok API」類型的金鑰；建議只勾要用的 Chat 模型並設定用量上限。</p>
-
-              <label class="mt-4 block text-sm font-medium text-slate-700">
-                Grok 模型名稱 (Model ID)
-                <input
-                  v-model="settings.grokModel"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  :placeholder="`空白＝使用預設（${DEFAULT_GROK_MODEL}）`"
-                  class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
-                />
-              </label>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <button
-                  v-for="m in GROK_MODEL_OPTIONS"
-                  :key="m"
-                  type="button"
-                  class="rounded-full px-3 py-1.5 text-xs"
-                  :class="(modelOverride(settings.grokModel, DEFAULT_GROK_MODEL) || DEFAULT_GROK_MODEL) === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
-                  @click="settings.grokModel = modelOverride(m, DEFAULT_GROK_MODEL)"
-                >
-                  {{ m }}{{ m === DEFAULT_GROK_MODEL ? '（預設）' : '' }}
-                </button>
-              </div>
-              <p class="mt-1 text-xs text-slate-400">留空會使用 App 的預設模型（目前是 {{ DEFAULT_GROK_MODEL }}，不推理、回應較快），App 更新預設時會自動跟著換；只有想固定用某個模型時才需要填。reasoning 模型較仔細但較慢。餐點照片需要支援圖片輸入的模型。</p>
             </template>
 
             <template v-else>
@@ -1407,31 +1433,6 @@ const qrCountdownLabel = computed(() => {
               </div>
             </label>
 
-            <label class="mt-4 block text-sm font-medium text-slate-700">
-              Gemini 模型名稱 (Model ID)
-              <input
-                v-model="settings.geminiModel"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                :placeholder="`空白＝使用預設（${DEFAULT_GEMINI_MODEL}）`"
-                class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
-              />
-            </label>
-            <div class="mt-2 flex flex-wrap gap-2">
-              <button
-                v-for="m in GEMINI_MODEL_OPTIONS"
-                :key="m"
-                type="button"
-                class="rounded-full px-3 py-1.5 text-xs"
-                :class="(modelOverride(settings.geminiModel, DEFAULT_GEMINI_MODEL) || DEFAULT_GEMINI_MODEL) === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
-                @click="settings.geminiModel = modelOverride(m, DEFAULT_GEMINI_MODEL)"
-              >
-                {{ m }}{{ m === DEFAULT_GEMINI_MODEL ? '（預設）' : '' }}
-              </button>
-            </div>
-            <p class="mt-1 text-xs text-slate-400">留空會使用 App 的預設模型（目前是 {{ DEFAULT_GEMINI_MODEL }}），App 更新預設時會自動跟著換；只有想固定用某個模型時才需要填。</p>
-
             <p class="mt-4 text-sm font-medium text-slate-700">🧠 AI 思考程度</p>
             <p class="text-xs text-slate-400">越高越仔細但越慢；日常餐點紀錄用低檔即可。</p>
             <div class="mt-2 flex flex-wrap gap-2">
@@ -1448,6 +1449,49 @@ const qrCountdownLabel = computed(() => {
             </div>
             <p class="mt-1 text-xs text-slate-400">{{ thinkingLevelHint }}</p>
             </template>
+
+            <details class="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <summary class="cursor-pointer text-sm font-medium text-slate-700">
+                ⚙️ 進階：AI 模型
+                <span class="ml-1 font-mono text-xs font-normal text-slate-500">{{ aiModelSelect || `預設（${aiDefaultModel}）` }}</span>
+              </summary>
+              <div class="mt-2 flex gap-2">
+                <select
+                  v-model="aiModelSelect"
+                  class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white p-2.5 font-mono text-sm"
+                >
+                  <option value="">預設（{{ aiDefaultModel }}）</option>
+                  <option v-for="m in aiModelChoices" :key="m.id" :value="m.id">
+                    {{ m.id }}{{ m.image === false ? '（不支援照片）' : '' }}
+                  </option>
+                </select>
+                <button
+                  type="button"
+                  class="shrink-0 rounded-lg bg-slate-100 px-3 text-xs text-slate-600 disabled:opacity-50"
+                  :disabled="modelListState.busy || !aiProviderKey"
+                  @click="refreshAiModels()"
+                >{{ modelListState.busy ? '查詢中…' : '🔄 重新整理' }}</button>
+              </div>
+              <p class="mt-1 text-xs text-slate-400">
+                清單是用你的金鑰向 {{ settings.aiProvider === 'grok' ? 'xAI' : 'Google' }} 查詢的可用模型（打開設定時每天自動更新一次）：{{ aiModelListInfo }}
+              </p>
+              <p v-if="!aiProviderKey" class="mt-1 text-xs text-slate-400">填入 API Key 後才能查詢。</p>
+              <p v-if="modelListState.error" class="mt-1 text-xs text-amber-700">{{ modelListState.error }}（目前顯示先前或內建的清單）</p>
+              <p class="mt-1 text-xs text-slate-400">
+                選「預設」時，App 更新預設模型會自動跟著換，一般不用改。換成其他模型後，先分析一餐（含照片）確認正常；清單不會標示品質或價格，有些模型可能不支援照片或固定格式的回覆。<template v-if="settings.aiProvider === 'grok'">reasoning 模型較仔細但較慢。</template>
+              </p>
+              <label class="mt-2 block text-xs text-slate-500">
+                清單裡沒有的模型，可以直接輸入名稱：
+                <input
+                  v-model="settings[aiModelField]"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="空白＝使用預設"
+                  class="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2 font-mono text-xs"
+                />
+              </label>
+            </details>
 
             <p class="mt-4 text-sm font-medium text-slate-700">🩺 健康背景（基準檢驗、藥物、目標）</p>
             <p class="text-xs text-slate-400">僅存於此瀏覽器，AI 請求時才附上；範本見 docs/health_context.example.md。</p>
