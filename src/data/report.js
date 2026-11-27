@@ -3,7 +3,7 @@
 // All values that come from day / lab records are normalized here (numbers via Number(), labs via
 // latestLabSnapshot / sanitize helpers, sick-day records via sanitizeSick), and the view renders them
 // only through Vue text interpolation or canvas fillText (never as HTML).
-import { live } from './presets.js'
+import { labZh, live } from './presets.js'
 import { latestLabSnapshot } from './labContext.js'
 import { sanitizeSick, sickLabels } from './sickDay.js'
 import { summarizeDay } from '../services/gemini.js'
@@ -182,6 +182,7 @@ export function buildReport({ days, labs, rangeDays = 30, now = new Date() }) {
   const labRows = latestLabSnapshot(labs).map((r) => ({
     key: r.key,
     label: r.label,
+    zh: labZh(r),
     unit: r.unit,
     baseline: r.baseline,
     baselineDate: r.baselineDate,

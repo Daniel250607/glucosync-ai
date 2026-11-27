@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, labName, labZh, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
 import { averageIntake, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
 import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
@@ -57,7 +57,7 @@ function implausibleFields(values) {
   return LAB_FIELDS.filter((f) => {
     const v = values[f.key]
     return v !== '' && v != null && sanitizeLabNumber(f.key, v) == null
-  }).map((f) => f.label)
+  }).map(labName)
 }
 
 // ---------- form ----------
@@ -271,7 +271,7 @@ async function runEvaluation() {
           </thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-for="f in LAB_FIELDS" :key="f.key">
-              <td class="py-2 pr-2 text-slate-700">{{ f.label }}</td>
+              <td class="py-2 pr-2 text-slate-700">{{ f.label }}<span class="block text-xs text-slate-400">{{ labZh(f) }}</span></td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ f.baseline ?? '—' }} <span class="text-xs text-slate-400">{{ f.unit }}</span></td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ f.targetLabel }}</td>
               <td class="py-2 pr-2 text-right font-medium text-slate-800">
@@ -288,7 +288,7 @@ async function runEvaluation() {
               </td>
             </tr>
             <tr v-for="u in URINE_QUALITATIVE" :key="u.key">
-              <td class="py-2 pr-2 text-slate-700">{{ u.label }}</td>
+              <td class="py-2 pr-2 text-slate-700">{{ u.label }}<span class="block text-xs text-slate-400">{{ labZh(u) }}</span></td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ u.baseline ?? '—' }}</td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ u.key === 'u_ketones' ? '陰性' : '改善' }}</td>
               <td class="py-2 pr-2 text-right font-medium text-slate-800">{{ latestByField[u.key]?.value || '—' }}</td>
@@ -314,11 +314,11 @@ async function runEvaluation() {
             <input v-model="baselineForm.date" type="date" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
           </label>
           <label v-for="f in LAB_FIELDS" :key="f.key" class="text-xs text-slate-500">
-            {{ f.label }} {{ f.unit }}
+            {{ labName(f) }} {{ f.unit }}
             <input v-model="baselineForm.values[f.key]" type="number" step="any" inputmode="decimal" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
           </label>
           <label v-for="u in URINE_QUALITATIVE" :key="u.key" class="text-xs text-slate-500">
-            {{ u.label }}
+            {{ labName(u) }}
             <input v-model="baselineForm.values[u.key]" placeholder="例如 +" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
           </label>
         </div>
@@ -346,7 +346,7 @@ async function runEvaluation() {
           />
         </label>
         <label v-for="f in LAB_FIELDS" :key="f.key" class="text-xs text-slate-500">
-          {{ f.label }} {{ f.unit }}
+          {{ labName(f) }} {{ f.unit }}
           <input
             v-model="form[f.key]"
             type="number"
@@ -356,11 +356,11 @@ async function runEvaluation() {
           />
         </label>
         <label class="text-xs text-slate-500">
-          U-Sugar
+          U-Sugar 尿液葡萄糖（尿糖）
           <input v-model="form.u_sugar" placeholder="例如 +" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
         </label>
         <label class="text-xs text-slate-500">
-          U-Ketones
+          U-Ketones 尿液酮體（尿酮）
           <input v-model="form.u_ketones" placeholder="例如 -" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-base text-slate-800" />
         </label>
         <label class="text-xs text-slate-500">
@@ -381,7 +381,7 @@ async function runEvaluation() {
         <li v-for="l in [...labs].reverse()" :key="l.date" class="py-2 text-slate-600">
           <span class="font-medium text-slate-800">{{ l.date }}</span>
           <span v-for="f in LAB_FIELDS.filter((x) => l[x.key] != null)" :key="f.key" class="ml-2">
-            {{ f.label }} {{ l[f.key] }}
+            {{ labName(f) }} {{ l[f.key] }}
           </span>
           <span v-if="l.note" class="ml-2 text-slate-400">— {{ l.note }}</span>
         </li>

@@ -67,7 +67,7 @@ function pngRows(r) {
   for (const l of r.labRows) {
     rows.push({
       kind: 'cols',
-      cells: [l.label + (l.unit ? ` (${l.unit})` : ''), l.baseline == null ? '—' : String(l.baseline), l.latest == null ? '尚無追蹤' : `${l.latest}（${l.latestDate}）${l.delta != null ? ` ${deltaText(l.delta)}` : ''}`, l.target === '—' && l.status === '—' ? '—' : `${l.target} · ${l.status}`],
+      cells: [l.label + (l.zh ? ` ${l.zh}` : '') + (l.unit ? ` (${l.unit})` : ''), l.baseline == null ? '—' : String(l.baseline), l.latest == null ? '尚無追蹤' : `${l.latest}（${l.latestDate}）${l.delta != null ? ` ${deltaText(l.delta)}` : ''}`, l.target === '—' && l.status === '—' ? '—' : `${l.target} · ${l.status}`],
     })
   }
   rows.push({ kind: 'h', text: '身體不適紀錄' })
@@ -245,7 +245,7 @@ defineExpose({ pngRows: () => pngRows(report.value) })
             <thead><tr><th>項目</th><th>基準（{{ getBaselineDate() || '未設定' }}）</th><th>最新（日期）</th><th>變化</th><th>目標</th><th>狀態</th></tr></thead>
             <tbody>
               <tr v-for="l in report.labRows" :key="l.key" :data-key="l.key">
-                <td>{{ l.label }}<span v-if="l.unit" class="text-xs text-slate-400">{{ ' ' + l.unit }}</span></td>
+                <td>{{ l.label }}<span v-if="l.zh" class="text-xs text-slate-500">{{ ' ' + l.zh }}</span><span v-if="l.unit" class="text-xs text-slate-400">{{ ' ' + l.unit }}</span></td>
                 <td class="tabular-nums">{{ l.baseline ?? '—' }}</td>
                 <td class="tabular-nums">
                   <template v-if="l.latest != null">{{ l.latest }} <span class="text-xs text-slate-500">（{{ l.latestDate }}）</span></template>

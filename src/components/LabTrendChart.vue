@@ -6,7 +6,7 @@
 // Charts are destroyed before every re-render and on unmount.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Chart, LineController, LineElement, PointElement, LinearScale, Legend, Tooltip, Filler } from 'chart.js'
-import { BMI_NORMAL, bmiOf, getBaselineDate, LAB_FIELDS, sanitizeWeight, weightRangeFromHeight } from '../data/presets.js'
+import { BMI_NORMAL, bmiOf, getBaselineDate, LAB_FIELDS, labName, sanitizeWeight, weightRangeFromHeight } from '../data/presets.js'
 import { sanitizeLabDate, sanitizeLabNumber } from '../data/labContext.js'
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, Legend, Tooltip, Filler)
@@ -171,7 +171,7 @@ function labConfig(f) {
       let status = ''
       if (f.dir === 'lt' && f.target != null) status = v < f.target ? '已達標' : '未達標'
       else if (REFERENCE[f.key]) status = v >= REFERENCE[f.key].value ? '參考範圍內' : '低於參考'
-      return `${f.label}：${v}${unit ? ` ${unit}` : ''}${status ? `（${status}）` : ''}`
+      return `${labName(f)}：${v}${unit ? ` ${unit}` : ''}${status ? `（${status}）` : ''}`
     },
   })
 }
@@ -262,13 +262,13 @@ const latestWeight = computed(() => weightSeries.value[weightSeries.value.length
     <div v-else class="mt-3 grid gap-4 md:grid-cols-2">
       <div v-for="f in chartFields" :key="f.key" :data-lab-chart="f.key">
         <h3 class="text-sm font-medium text-slate-700">
-          {{ f.label }} <span class="text-xs font-normal text-slate-400">{{ f.unit }}{{ f.target != null ? ` · 目標 ${f.targetLabel}` : '' }}</span>
+          {{ labName(f) }} <span class="text-xs font-normal text-slate-400">{{ f.unit }}{{ f.target != null ? ` · 目標 ${f.targetLabel}` : '' }}</span>
         </h3>
-        <div class="mt-1 h-56"><canvas :ref="(el) => setCanvas(f.key, el)" role="img" :aria-label="f.label + ' 趨勢圖'" /></div>
+        <div class="mt-1 h-56"><canvas :ref="(el) => setCanvas(f.key, el)" role="img" :aria-label="labName(f) + ' 趨勢圖'" /></div>
       </div>
     </div>
     <p v-if="hasAnyFollowUp && baselineOnlyFields.length" class="mt-2 text-xs text-slate-400" data-testid="lab-trends-baseline-only">
-      尚無追蹤值（只有基準）：{{ baselineOnlyFields.map((f) => f.label).join('、') }}
+      尚無追蹤值（只有基準）：{{ baselineOnlyFields.map(labName).join('、') }}
     </p>
 
     <div class="mt-4 border-t border-slate-100 pt-3" data-lab-chart="weight">

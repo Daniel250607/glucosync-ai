@@ -163,28 +163,42 @@ export function medIdFromName(name) {
 // never shipped in the code but entered by the user (section `labBaseline` of the custom config),
 // and exposed through the reactive `baseline` getters below (null until entered).
 // `dir` = "lt" means lower is better (value must be below `target`);
+// `label` is the English name used on lab reports and in AI prompts; `zh` is the Chinese medical name and
+// `common` the everyday name (empty when it is the same as `zh`).
 const LAB_FIELD_DEFS = [
-  { key: 'hba1c', label: 'HbA1c', unit: '%', target: 7.5, targetLabel: '< 7.0-7.5', dir: 'lt' },
-  { key: 'ac_sugar', label: 'AC Sugar', unit: 'mg/dL', target: 130, targetLabel: '< 110-130', dir: 'lt' },
-  { key: 'ldl', label: 'LDL-C', unit: 'mg/dL', target: 100, targetLabel: '< 100', dir: 'lt' },
-  { key: 'tg', label: 'TG', unit: 'mg/dL', target: 150, targetLabel: '< 150', dir: 'lt' },
-  { key: 't_cho', label: 'T-Cho', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'hdl', label: 'HDL-C', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'uacr', label: 'UAcr', unit: '', target: 30, targetLabel: '< 30', dir: 'lt' },
-  { key: 'micro_albumin', label: 'Micro-Albumin', unit: 'mg/L', target: null, targetLabel: '—', dir: null },
-  { key: 'creatinine', label: 'Creatinine', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'egfr', label: 'eGFR', unit: '', target: null, targetLabel: '—', dir: null },
-  { key: 'bun', label: 'BUN', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 'uric_acid', label: 'Uric Acid', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
-  { key: 's_gpt', label: 'S-GPT', unit: 'U/L', target: null, targetLabel: '—', dir: null },
-  { key: 'u_sg', label: 'U-Specific Gravity', unit: '', target: null, targetLabel: '1.005-1.030', dir: null },
+  { key: 'hba1c', label: 'HbA1c', zh: '糖化血色素', common: '三個月平均血糖', unit: '%', target: 7.5, targetLabel: '< 7.0-7.5', dir: 'lt' },
+  { key: 'ac_sugar', label: 'AC Sugar', zh: '空腹血漿葡萄糖', common: '空腹血糖', unit: 'mg/dL', target: 130, targetLabel: '< 110-130', dir: 'lt' },
+  { key: 'ldl', label: 'LDL-C', zh: '低密度脂蛋白膽固醇', common: '壞膽固醇', unit: 'mg/dL', target: 100, targetLabel: '< 100', dir: 'lt' },
+  { key: 'tg', label: 'TG', zh: '三酸甘油酯', common: '中性脂肪', unit: 'mg/dL', target: 150, targetLabel: '< 150', dir: 'lt' },
+  { key: 't_cho', label: 'T-Cho', zh: '總膽固醇', common: '', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'hdl', label: 'HDL-C', zh: '高密度脂蛋白膽固醇', common: '好膽固醇', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'uacr', label: 'UAcr', zh: '尿液白蛋白/肌酸酐比值', common: '尿蛋白比值', unit: '', target: 30, targetLabel: '< 30', dir: 'lt' },
+  { key: 'micro_albumin', label: 'Micro-Albumin', zh: '尿液微量白蛋白', common: '微量尿蛋白', unit: 'mg/L', target: null, targetLabel: '—', dir: null },
+  { key: 'creatinine', label: 'Creatinine', zh: '血清肌酸酐', common: '腎功能指數', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'egfr', label: 'eGFR', zh: '估算腎絲球過濾率', common: '腎臟過濾率', unit: '', target: null, targetLabel: '—', dir: null },
+  { key: 'bun', label: 'BUN', zh: '血中尿素氮', common: '尿素氮', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 'uric_acid', label: 'Uric Acid', zh: '尿酸', common: '', unit: 'mg/dL', target: null, targetLabel: '—', dir: null },
+  { key: 's_gpt', label: 'S-GPT', zh: '丙胺酸轉胺酶', common: '肝功能指數', unit: 'U/L', target: null, targetLabel: '—', dir: null },
+  { key: 'u_sg', label: 'U-Specific Gravity', zh: '尿液比重', common: '尿比重', unit: '', target: null, targetLabel: '1.005-1.030', dir: null },
 ]
 
 // Qualitative urine definitions (baseline entered by the user, not numeric).
 const URINE_DEFS = [
-  { key: 'u_sugar', label: 'U-Sugar' },
-  { key: 'u_ketones', label: 'U-Ketones' },
+  { key: 'u_sugar', label: 'U-Sugar', zh: '尿液葡萄糖', common: '尿糖' },
+  { key: 'u_ketones', label: 'U-Ketones', zh: '尿液酮體', common: '尿酮' },
 ]
+
+/** Chinese name: medical name with the everyday name in brackets, e.g. "丙胺酸轉胺酶（肝功能指數）". */
+export function labZh(f) {
+  if (!f?.zh) return ''
+  return f.common ? `${f.zh}（${f.common}）` : f.zh
+}
+
+/** Display name: English name followed by the Chinese names, e.g. "S-GPT 丙胺酸轉胺酶（肝功能指數）". */
+export function labName(f) {
+  const zh = labZh(f)
+  return zh ? `${f.label} ${zh}` : f?.label || ''
+}
 
 const withBaseline = (def) =>
   Object.defineProperty({ ...def }, 'baseline', {

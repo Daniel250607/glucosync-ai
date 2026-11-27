@@ -139,7 +139,7 @@ export function latestLabSnapshot(labs) {
     if (!p && baseline == null) continue // nothing known for this field yet
     const value = p ? p.value : baseline
     rows.push({
-      key: f.key, label: f.label, unit: f.unit || '', kind: 'numeric',
+      key: f.key, label: f.label, zh: f.zh || '', common: f.common || '', unit: f.unit || '', kind: 'numeric',
       baseline, baselineDate: getBaselineDate(),
       latest: value, latestDate: p ? p.date : getBaselineDate(), source: p ? 'follow-up' : 'baseline',
       targetLabel: f.targetLabel && f.targetLabel !== '—' ? f.targetLabel : null,
@@ -158,7 +158,7 @@ export function latestLabSnapshot(labs) {
       trend = d < 0 ? 'improved' : d > 0 ? 'worsened' : 'unchanged'
     }
     rows.push({
-      key: q.key, label: q.label, unit: '', kind: 'qualitative',
+      key: q.key, label: q.label, zh: q.zh || '', common: q.common || '', unit: '', kind: 'qualitative',
       baseline: q.baseline, baselineDate: getBaselineDate(),
       latest: value, latestDate: p ? p.date : getBaselineDate(), source: p ? 'follow-up' : 'baseline',
       targetLabel: 'negative (-)', status: value === '-' ? 'negative' : value === '±' ? 'trace' : 'positive', trend,
