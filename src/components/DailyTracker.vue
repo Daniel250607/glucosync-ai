@@ -1096,6 +1096,41 @@ const presetCategory = ref('')
 const shownPresetCategory = computed(() =>
   presetCategories.value.includes(presetCategory.value) ? presetCategory.value : presetCategories.value[0] || '',
 )
+
+// ---------- phone sub-tabs: one group of cards at a time; wide screens (md+) still show every card ----------
+const SUB_TAB_KEY = 'glucosync_daily_subtab'
+const SUB_TAB_IDS = ['meal', 'water', 'meds', 'exercise', 'summary']
+function loadSubTab() {
+  try {
+    const v = localStorage.getItem(SUB_TAB_KEY)
+    return SUB_TAB_IDS.includes(v) ? v : 'meal'
+  } catch {
+    return 'meal'
+  }
+}
+const subTab = ref(loadSubTab())
+watch(subTab, (v) => {
+  try {
+    localStorage.setItem(SUB_TAB_KEY, v)
+  } catch {
+    // Remembering the tab is optional.
+  }
+})
+const subTabs = computed(() => {
+  const meals = (props.day.meals || []).length
+  const { done, total } = medDone.value
+  return [
+    { id: 'meal', label: '🍱 餐點', badge: meals ? `${meals} 餐` : '—', done: false },
+    { id: 'water', label: '💧 飲水', badge: `${effectiveWaterCc.value}cc`, done: hydrationReached.value },
+    { id: 'meds', label: '💊 用藥', badge: total ? `${done}/${total}` : '—', done: total > 0 && done === total },
+    { id: 'exercise', label: '🏃 運動', badge: `${Math.round(todayExercise.value.postMeal)} 分`, done: postMealReached.value },
+    { id: 'summary', label: '🧠 總結', badge: props.day.ai_summary ? '已產生' : '—', done: false },
+  ]
+})
+/** Cards outside the chosen sub-tab are hidden on phones only. */
+function subTabClass(id) {
+  return subTab.value === id ? '' : 'hidden md:block'
+}
 </script>
 
 <template>
@@ -1183,8 +1218,27 @@ const shownPresetCategory = computed(() =>
       </div>
     </section>
 
+    <!-- Phone sub-tabs (hidden on wide screens, which show every card) -->
+    <nav class="grid grid-cols-5 gap-1 rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200 md:hidden" data-testid="daily-subtabs">
+      <button
+        v-for="t in subTabs"
+        :key="t.id"
+        type="button"
+        class="rounded-xl px-0.5 py-1.5 text-center"
+        :class="subTab === t.id ? 'bg-teal-600 text-white' : 'text-slate-600 active:bg-slate-100'"
+        :aria-pressed="subTab === t.id"
+        @click="subTab = t.id"
+      >
+        <span class="block whitespace-nowrap text-xs font-semibold">{{ t.label }}</span>
+        <span
+          class="block whitespace-nowrap text-[11px]"
+          :class="subTab === t.id ? 'text-teal-50' : t.done ? 'text-teal-600' : 'text-slate-400'"
+        >{{ t.done ? '✓ ' : '' }}{{ t.badge }}</span>
+      </button>
+    </nav>
+
     <!-- Hydration & Drinks -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('water')">
       <div class="flex items-start justify-between gap-2">
         <div class="min-w-0">
           <h2 class="font-semibold text-slate-800">💧 飲水與飲品紀錄</h2>
@@ -1483,7 +1537,7 @@ const shownPresetCategory = computed(() =>
     </section>
 
     <!-- Medications -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('meds')">
       <div class="flex items-baseline justify-between">
         <h2 class="font-semibold text-slate-800">💊 用藥</h2>
         <span class="text-sm text-slate-500">{{ medDone.done }} / {{ medDone.total }}</span>
@@ -1516,7 +1570,7 @@ const shownPresetCategory = computed(() =>
     </section>
 
     <!-- Exercise (Flexible + Preset Editor) -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('exercise')">
       <div class="flex items-center justify-between gap-2">
         <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
         <button
@@ -1961,7 +2015,7 @@ const shownPresetCategory = computed(() =>
     </section>
 
     <!-- Meal logging -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('meal')">
       <div class="flex items-start justify-between gap-2">
         <div>
           <h2 class="font-semibold text-slate-800">🍱 記錄餐點</h2>
@@ -2204,7 +2258,7 @@ const shownPresetCategory = computed(() =>
     </section>
 
     <!-- Real-time alert cards -->
-    <section v-if="mealToShow?.analysis" class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section v-if="mealToShow?.analysis" class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('meal')">
       <h2 class="font-semibold text-slate-800">🚦 {{ mealToShow.analysis.meal_name }}</h2>
       <p class="mt-1 text-xs text-slate-500">
         約 {{ Math.round(mealToShow.analysis.estimated_calories_kcal) }} kcal ·
@@ -2254,7 +2308,7 @@ const shownPresetCategory = computed(() =>
     </section>
 
     <!-- Meal log -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('meal')">
       <div class="flex items-baseline justify-between">
         <h2 class="font-semibold text-slate-800">📋 今日餐點</h2>
         <span class="text-xs text-slate-500">
@@ -2290,7 +2344,7 @@ const shownPresetCategory = computed(() =>
     </section>
 
     <!-- Daily AI summary (ported from the standalone build) -->
-    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('summary')">
       <h2 class="font-semibold text-slate-800">🧠 今日 AI 總結</h2>
       <button
         type="button"
