@@ -589,8 +589,8 @@ onBeforeUnmount(() => {
         <div class="mt-2 h-72 sm:h-72"><canvas ref="exerciseCanvas" role="img" aria-label="運動趨勢圖" /></div>
       </div>
     </div>
-    <div v-if="series.length" class="mt-3 space-y-1 text-xs text-slate-500" data-legend-notes>
-      <p class="font-medium text-slate-600">圖例說明</p>
+    <details v-if="series.length" class="mt-3 space-y-1 text-xs text-slate-500" data-legend-notes>
+      <summary class="cursor-pointer font-medium text-slate-600">ⓘ 圖例說明（點開看顏色與計算方式）</summary>
       <p>
         🍚 碳水長條：<span class="legend-dot" :style="{ background: COLORS.carbsOk }"></span>橘＝範圍內 {{ live.targets.carbsMin }}–{{ live.targets.carbsMax }} g、
         <span class="legend-dot" :style="{ background: COLORS.carbsHigh }"></span>紅＝超標（&gt; {{ live.targets.carbsMax }} g）、
@@ -607,7 +607,7 @@ onBeforeUnmount(() => {
         「餐後活動」達成率看每天飯後 2 小時內的活動是否 ≥ {{ live.targets.exerciseTarget }} 分（任何強度都算）。
       </p>
       <p>達成率只計算「有記錄該項目」的天數；徽章 ▲/▼＝與前一段 {{ range }} 天相比的變化（百分點）。點圖例可隱藏/顯示該資料。</p>
-    </div>
+    </details>
   </section>
 </template>
 

@@ -124,6 +124,16 @@ function submit() {
   else showToast(`已記錄 ${form.date} 的體重`)
   for (const f of LAB_FIELDS) form[f.key] = ''
   form.u_sugar = form.u_ketones = form.note = form.weight = ''
+  labFormOpen.value = false
+}
+// The 16-field entry form stays folded until "新增檢驗結果" is pressed.
+const labFormOpen = ref(false)
+
+/** One lab record as short "name value" items for the history list. */
+function labRecordItems(l) {
+  const items = LAB_FIELDS.filter((f) => l[f.key] != null && l[f.key] !== '').map((f) => ({ key: f.key, name: f.label, zh: labZh(f), value: l[f.key], unit: f.unit }))
+  for (const u of URINE_QUALITATIVE) if (l[u.key]) items.push({ key: u.key, name: u.label, zh: labZh(u), value: l[u.key], unit: '' })
+  return items
 }
 
 // ---------- baseline (personal values live in the custom config, never in the code) ----------
@@ -269,7 +279,37 @@ async function runEvaluation() {
         <span v-if="latest"> · 最新追蹤 {{ latest.date }}</span>
       </p>
 
-      <div class="-mx-4 mt-3 overflow-x-auto px-4">
+      <!-- Phones: one row per item with the latest value and status on the right (the table would be cut off). -->
+      <ul class="mt-3 divide-y divide-slate-100 sm:hidden" data-testid="lab-cards">
+        <li v-for="f in LAB_FIELDS" :key="f.key" class="flex items-center gap-2 py-2">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm text-slate-800">{{ f.label }} <span class="text-xs text-slate-400">{{ labZh(f) }}</span></p>
+            <p class="text-xs text-slate-500">基準 {{ f.baseline ?? '—' }} · 標準 {{ f.targetLabel }}</p>
+          </div>
+          <div class="shrink-0 text-right">
+            <p class="font-semibold tabular-nums text-slate-800">
+              <span :title="latestByField[f.key]?.date">{{ latestByField[f.key]?.value ?? '—' }}</span>
+              <span v-if="latestByField[f.key]" class="text-xs font-normal text-slate-400"> {{ f.unit }}</span>
+            </p>
+            <p v-if="latestByField[f.key] && delta(f, latestByField[f.key].value)" class="text-[11px] tabular-nums text-slate-400">
+              {{ delta(f, latestByField[f.key].value) }}
+            </p>
+          </div>
+          <span class="w-14 shrink-0 rounded-full px-2 py-0.5 text-center text-xs" :class="STATUS_STYLE[statusOf(f, latestByField[f.key]?.value)]">
+            {{ STATUS_TEXT[statusOf(f, latestByField[f.key]?.value)] }}
+          </span>
+        </li>
+        <li v-for="u in URINE_QUALITATIVE" :key="u.key" class="flex items-center gap-2 py-2">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm text-slate-800">{{ u.label }} <span class="text-xs text-slate-400">{{ labZh(u) }}</span></p>
+            <p class="text-xs text-slate-500">基準 {{ u.baseline ?? '—' }} · 標準 {{ urineExpected(u) ? '預期陽性（藥物作用）' : '陰性' }}</p>
+          </div>
+          <p class="shrink-0 font-semibold text-slate-800">{{ latestByField[u.key]?.value || '—' }}</p>
+          <span class="w-14 shrink-0 rounded-full px-2 py-0.5 text-center text-xs" :class="STATUS_STYLE[urineStatus(u)]">{{ STATUS_TEXT[urineStatus(u)] }}</span>
+        </li>
+      </ul>
+
+      <div class="-mx-4 mt-3 hidden overflow-x-auto px-4 sm:block">
         <table class="w-full min-w-[420px] text-sm">
           <thead>
             <tr class="text-left text-xs text-slate-400">
@@ -315,6 +355,10 @@ async function runEvaluation() {
         <template v-if="LAB_FIELDS.some((f) => f.needsSex)">HDL-C、肌酸酐、尿酸的標準男女不同，請在設定頁選擇性別後才會判斷。</template>
         <template v-if="takesSglt2Inhibitor()">用藥清單有 SGLT-2 抑制劑：這類藥物會把糖從尿液排出，尿糖陽性是預期的藥物作用，所以不判斷達標。</template>
       </p>
+      <div v-if="ruleResult.notices.length" class="mt-3 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert" data-testid="lab-notices">
+        <p class="font-semibold">⚠️ 依檢驗的提醒</p>
+        <p v-for="n in ruleResult.notices" :key="n" class="mt-1">• {{ n }}</p>
+      </div>
     </section>
 
     <!-- Baseline entry -->
@@ -353,7 +397,19 @@ async function runEvaluation() {
 
     <!-- Entry form -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <h2 class="font-semibold text-slate-800">➕ 新增追蹤檢驗結果</h2>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="font-semibold text-slate-800">🧾 追蹤檢驗結果</h2>
+        <button
+          type="button"
+          class="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium"
+          :class="labFormOpen ? 'bg-slate-100 text-slate-700' : 'bg-teal-600 text-white active:bg-teal-700'"
+          data-testid="lab-form-toggle"
+          @click="labFormOpen = !labFormOpen"
+        >
+          {{ labFormOpen ? '收起' : '➕ 新增檢驗結果' }}
+        </button>
+      </div>
+      <template v-if="labFormOpen">
       <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <label class="col-span-2 text-xs text-slate-500 sm:col-span-3">
           檢驗日期
@@ -394,14 +450,25 @@ async function runEvaluation() {
       <button class="mt-3 w-full rounded-xl bg-teal-700 py-3.5 font-semibold text-white active:bg-teal-800" @click="submit">
         儲存檢驗結果
       </button>
+      </template>
 
-      <ul v-if="labs.length" class="mt-4 divide-y divide-slate-100 text-sm">
-        <li v-for="l in [...labs].reverse()" :key="l.date" class="py-2 text-slate-600">
-          <span class="font-medium text-slate-800">{{ l.date }}</span>
-          <span v-for="f in LAB_FIELDS.filter((x) => l[x.key] != null)" :key="f.key" class="ml-2">
-            {{ labName(f) }} {{ l[f.key] }}
-          </span>
-          <span v-if="l.note" class="ml-2 text-slate-400">— {{ l.note }}</span>
+      <!-- History: one line per record, details folded. -->
+      <p v-if="!labs.length" class="mt-2 text-xs text-slate-400">還沒有追蹤檢驗紀錄。</p>
+      <ul v-else class="mt-3 divide-y divide-slate-100 text-sm" data-testid="lab-history">
+        <li v-for="l in [...labs].reverse()" :key="l.date" class="py-1.5">
+          <details>
+            <summary class="cursor-pointer text-slate-700">
+              <span class="font-medium text-slate-800">{{ l.date }}</span>
+              <span class="ml-2 text-xs text-slate-500">{{ labRecordItems(l).length }} 項</span>
+              <span v-if="l.note" class="ml-2 text-xs text-slate-400">— {{ l.note }}</span>
+            </summary>
+            <dl class="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 pl-4 text-xs sm:grid-cols-2">
+              <div v-for="it in labRecordItems(l)" :key="it.key" class="flex justify-between gap-2">
+                <dt class="min-w-0 truncate text-slate-500">{{ it.name }} <span class="text-slate-400">{{ it.zh }}</span></dt>
+                <dd class="shrink-0 font-medium tabular-nums text-slate-800">{{ it.value }} <span class="font-normal text-slate-400">{{ it.unit }}</span></dd>
+              </div>
+            </dl>
+          </details>
         </li>
       </ul>
     </section>
@@ -427,10 +494,7 @@ async function runEvaluation() {
           <b>運動</b>：每天餐後活動合計 {{ live.targets.exerciseTarget }} 分，不用每餐都做（{{ RULES.exercise.postMealSource }}）；每週中等以上有氧 {{ live.targets.aerobicWeekTarget }} 分、肌力訓練 {{ live.targets.strengthWeekTarget }} 天。依據：{{ RULES.exercise.source }}。不隨檢驗變動，可在設定頁修改。
         </li>
       </ul>
-      <div v-if="ruleResult.notices.length" class="mt-3 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert">
-        <p class="font-semibold">⚠️ 依檢驗的提醒</p>
-        <p v-for="n in ruleResult.notices" :key="n" class="mt-1">• {{ n }}</p>
-      </div>
+      <p v-if="ruleResult.notices.length" class="mt-3 text-xs text-amber-700">⚠️ 依檢驗的提醒在上方「檢驗里程碑」表格下面。</p>
       <button
         type="button"
         class="mt-3 w-full rounded-xl bg-amber-600 py-3 font-semibold text-white disabled:opacity-60 active:bg-amber-700"

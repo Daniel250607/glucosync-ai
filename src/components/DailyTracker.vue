@@ -244,6 +244,7 @@ async function askHydrationSchedule() {
 
 const drinkForm = reactive({ name: '', volume_cc: 350, counts_as_water: true, note: '' })
 const drinkEditMode = ref(false)
+const drinkFormOpen = ref(false) // the drink form stays folded behind one button until needed
 const drinkManageError = ref('')
 const newDrinkPreset = reactive({ name: '', default_cc: 350, counts_as_water: true })
 
@@ -281,6 +282,7 @@ function addDrinkLog() {
   })
   drinkForm.name = ''
   drinkForm.note = ''
+  drinkFormOpen.value = false
 }
 
 function removeDrinkLog(id) {
@@ -434,9 +436,15 @@ const exerciseKcalTotal = computed(() =>
 )
 
 function selectExerciseType(type) {
+  exerciseOtherOpen.value = false
   exerciseForm.type = type
   exerciseForm.mode = exerciseProfile(type).mode
 }
+// "✏️ 其他": a free-text type that is not one of the quick-select chips.
+const exerciseOtherOpen = ref(false)
+const customExerciseType = computed(
+  () => exerciseOtherOpen.value || (!!exerciseForm.type && !live.exerciseTypes.includes(exerciseForm.type)),
+)
 
 function setExerciseMode(mode) {
   exerciseForm.mode = mode === 'reps' ? 'reps' : 'duration'
@@ -1083,12 +1091,29 @@ const presetGroups = computed(() => {
   return g
 })
 const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.category))])
+// Meal preset category shown in normal mode; falls back to the first one when it no longer exists.
+const presetCategory = ref('')
+const shownPresetCategory = computed(() =>
+  presetCategories.value.includes(presetCategory.value) ? presetCategory.value : presetCategories.value[0] || '',
+)
 </script>
 
 <template>
   <div class="space-y-4">
-    <!-- Sick day (身體不適) -->
+    <!-- Sick day (身體不適): without a record only a compact button, shown in the date card (App.vue). -->
+    <Teleport defer to="#day-actions-slot">
+      <button
+        v-if="!sickInfo && !sickEditing"
+        type="button"
+        class="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-300 active:bg-rose-100"
+        data-testid="sick-open"
+        @click="openSickEditor"
+      >
+        🤒 今天不舒服
+      </button>
+    </Teleport>
     <section
+      v-if="sickInfo || sickEditing"
       class="rounded-2xl p-4 shadow-sm ring-1"
       :class="sickInfo ? 'bg-rose-50 ring-rose-200' : 'bg-white ring-slate-200'"
       data-testid="sick-section"
@@ -1096,16 +1121,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h2 class="font-semibold text-slate-800">{{ sickInfo ? '🤒 身體不適紀錄' : '🩺 身體狀況' }}</h2>
         <div class="flex gap-2">
-          <button
-            v-if="!sickInfo && !sickEditing"
-            type="button"
-            class="min-h-11 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white active:bg-rose-700"
-            data-testid="sick-open"
-            @click="openSickEditor"
-          >
-            🤒 今天不舒服
-          </button>
-          <template v-else-if="sickInfo && !sickEditing">
+          <template v-if="sickInfo && !sickEditing">
             <button type="button" class="min-h-11 rounded-xl bg-white px-3 py-2 text-sm text-rose-700 ring-1 ring-rose-200" @click="openSickEditor">✏️ 編輯</button>
             <button type="button" class="min-h-11 rounded-xl bg-white px-3 py-2 text-sm text-slate-600 ring-1 ring-slate-200" data-testid="sick-clear" @click="clearSick">已好轉，清除</button>
           </template>
@@ -1287,9 +1303,22 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         </p>
       </div>
 
-      <!-- Drink logging normal mode -->
-      <div v-if="!drinkEditMode" class="mt-4 border-t border-slate-100 pt-3">
-        <p class="mb-2 text-xs font-medium text-slate-500">🍵 飲品快選 (點選帶入，可微調容量或直接輸入)：</p>
+      <!-- Drink logging normal mode (folded until opened) -->
+      <div v-if="!drinkEditMode && !drinkFormOpen" class="mt-3">
+        <button
+          type="button"
+          class="w-full rounded-xl bg-sky-50 py-2.5 text-sm font-medium text-sky-800 ring-1 ring-sky-200 active:bg-sky-100"
+          data-testid="drink-open"
+          @click="drinkFormOpen = true"
+        >
+          🍵 記錄飲品（茶、咖啡、豆漿…）
+        </button>
+      </div>
+      <div v-else-if="!drinkEditMode" class="mt-4 border-t border-slate-100 pt-3">
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <p class="text-xs font-medium text-slate-500">🍵 飲品快選（點選帶入，可微調容量或直接輸入）：</p>
+          <button type="button" class="shrink-0 text-xs text-slate-500 underline" @click="drinkFormOpen = false">收起</button>
+        </div>
         <div class="flex flex-wrap gap-1.5">
           <button
             v-for="dp in live.drinkPresets"
@@ -1488,18 +1517,8 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
 
     <!-- Exercise (Flexible + Preset Editor) -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
-          <p class="mt-0.5 text-xs" :class="postMealReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'" data-testid="ex-post-meal">
-            餐後活動（一天合計）：{{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
-          </p>
-          <p class="text-[11px] text-slate-400">不用每餐都做，建議優先放在晚餐後；也可以分在幾餐飯後。</p>
-          <p class="mt-0.5 text-xs text-slate-500">
-            今日：有氧 {{ todayExercise.aerobic }} 分 · 輕度 {{ todayExercise.light }} 分 · 肌力 {{ todayExercise.strengthDone ? '✓' : '—' }}
-            <span v-if="exerciseKcalTotal"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
-          </p>
-        </div>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
         <button
           class="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium"
           :class="exerciseEditMode ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 active:bg-slate-200'"
@@ -1508,6 +1527,14 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           {{ exerciseEditMode ? '✓ 完成編輯' : '⚙️ 編輯運動快選' }}
         </button>
       </div>
+      <p class="mt-1 text-xs" :class="postMealReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'" data-testid="ex-post-meal">
+        餐後活動（一天合計）：{{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
+      </p>
+      <p class="text-[11px] text-slate-400">不用每餐都做，建議優先放在晚餐後；也可以分在幾餐飯後。</p>
+      <p class="mt-0.5 text-xs text-slate-500">
+        今日：有氧 {{ todayExercise.aerobic }} 分 · 輕度 {{ todayExercise.light }} 分 · 肌力 {{ todayExercise.strengthDone ? '✓' : '—' }}
+        <span v-if="exerciseKcalTotal"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
+      </p>
 
       <!-- Rolling 7 days vs the weekly targets -->
       <div class="mt-2 grid grid-cols-2 gap-2 text-xs" data-testid="ex-week">
@@ -1547,28 +1574,48 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           >
             {{ t }}
           </button>
+          <button
+            type="button"
+            class="rounded-full border border-dashed px-3 py-1 text-xs"
+            :class="customExerciseType ? 'border-teal-600 bg-teal-50 text-teal-800 font-medium' : 'border-slate-300 bg-white text-slate-500'"
+            data-testid="ex-other"
+            @click="exerciseOtherOpen = true; exerciseForm.type = ''"
+          >
+            ✏️ 其他
+          </button>
         </div>
+        <input
+          v-if="customExerciseType"
+          v-model="exerciseForm.type"
+          type="text"
+          placeholder="輸入運動名稱（例如：游泳、超慢跑）"
+          class="w-full rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
+        />
 
-        <div class="flex gap-1">
-          <button
-            type="button"
-            class="rounded-lg px-3 py-1.5 text-xs font-medium"
-            :class="exerciseForm.mode !== 'reps' ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600'"
-            @click="setExerciseMode('duration')"
-          >
-            時間模式
-          </button>
-          <button
-            type="button"
-            class="rounded-lg px-3 py-1.5 text-xs font-medium"
-            :class="exerciseForm.mode === 'reps' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'"
-            @click="setExerciseMode('reps')"
-          >
-            次數模式
-          </button>
-          <span class="ml-auto self-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" :title="EXERCISE_CATEGORIES.find((c) => c.value === currentCategory)?.hint">
+        <!-- Category of the chosen type + how it is logged -->
+        <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" :title="EXERCISE_CATEGORIES.find((c) => c.value === currentCategory)?.hint">
             類別：{{ CATEGORY_LABEL[currentCategory] }}
           </span>
+          <span class="ml-auto">記錄方式</span>
+          <div class="flex gap-1">
+            <button
+              type="button"
+              class="rounded-lg px-2.5 py-1 text-xs font-medium"
+              :class="exerciseForm.mode !== 'reps' ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600'"
+              @click="setExerciseMode('duration')"
+            >
+              時間
+            </button>
+            <button
+              type="button"
+              class="rounded-lg px-2.5 py-1 text-xs font-medium"
+              :class="exerciseForm.mode === 'reps' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'"
+              @click="setExerciseMode('reps')"
+            >
+              次數
+            </button>
+          </div>
         </div>
 
         <!-- Talk-test intensity (aerobic only) -->
@@ -1590,30 +1637,8 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <p v-if="exerciseForm.intensity === 'vigorous' && ketone" class="text-xs text-amber-700">尿酮還不是陰性，先不要做費力運動。</p>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500" data-testid="ex-time">
-          <label class="flex items-center gap-1.5">
-            開始時間
-            <input v-model="exerciseForm.time" type="time" class="rounded-lg border border-slate-300 p-1.5 text-sm text-slate-800" />
-          </label>
-          <button v-if="exerciseForm.time" type="button" class="rounded-lg bg-slate-100 px-2.5 py-1.5 text-slate-700 active:bg-slate-200" @click="exerciseForm.time = ''">
-            改回現在
-          </button>
-          <span v-else>不填＝現在；運動完才記錄請填實際開始時間</span>
-        </div>
-
-        <label class="flex items-center gap-2 text-xs text-slate-600">
-          <input type="checkbox" :checked="postMealChecked()" @change="exerciseForm.postMeal = $event.target.checked" />
-          飯後 2 小時內的活動（計入餐後活動；依開始時間自動判斷，可手動改）
-        </label>
-
-        <div class="grid grid-cols-1 gap-2 sm:grid-cols-12">
-          <input
-            v-model="exerciseForm.type"
-            type="text"
-            placeholder="運動類型 (可自行輸入)"
-            class="self-start rounded-lg border border-slate-300 p-2 text-sm text-slate-800 sm:col-span-4"
-          />
-          <div v-if="exerciseForm.mode !== 'reps'" class="flex flex-wrap items-center gap-1.5 sm:col-span-8">
+        <div>
+          <div v-if="exerciseForm.mode !== 'reps'" class="flex flex-wrap items-center gap-1.5">
             <input
               v-model="exerciseForm.duration"
               type="number"
@@ -1644,7 +1669,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               +30分
             </button>
           </div>
-          <div v-else class="flex flex-wrap items-center gap-1.5 sm:col-span-8">
+          <div v-else class="flex flex-wrap items-center gap-1.5">
             <input
               v-model="exerciseForm.reps"
               type="number"
@@ -1688,22 +1713,43 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           <template v-if="exerciseForm.mode === 'reps'">約 {{ repsActualPreview }} 分（每分鐘 {{ currentProfile.repsPerMin }} 下）· </template>{{ creditPreview }} · 約 {{ kcalPreview }} kcal
         </p>
 
-        <div class="flex gap-2">
-          <input
-            v-model="exerciseForm.note"
-            type="text"
-            placeholder="選填備註 (如：坡度 3%、時速 5.5km、公里數或重訓組數)"
-            class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
-            @keyup.enter="addExerciseLog()"
-          />
-          <button
-            type="button"
-            class="shrink-0 rounded-xl bg-teal-600 px-4 py-2 text-sm font-medium text-white active:bg-teal-700"
-            @click="addExerciseLog()"
-          >
-            ➕ 新增運動
-          </button>
-        </div>
+        <!-- Start time, post-meal flag and note: folded, with their current values shown in the summary. -->
+        <details class="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-200" data-testid="ex-more">
+          <summary class="cursor-pointer text-xs text-slate-600">
+            更多選項：開始時間 {{ exerciseForm.time || '現在' }} · {{ postMealChecked() ? '算餐後' : '不算餐後' }}{{ exerciseForm.note ? ' · 有備註' : '' }}
+          </summary>
+          <div class="mt-2 space-y-2">
+            <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500" data-testid="ex-time">
+              <label class="flex items-center gap-1.5">
+                開始時間
+                <input v-model="exerciseForm.time" type="time" class="rounded-lg border border-slate-300 bg-white p-1.5 text-sm text-slate-800" />
+              </label>
+              <button v-if="exerciseForm.time" type="button" class="rounded-lg bg-white px-2.5 py-1.5 text-slate-700 ring-1 ring-slate-200" @click="exerciseForm.time = ''">
+                改回現在
+              </button>
+              <span v-else>不填＝現在；運動完才記錄請填實際開始時間</span>
+            </div>
+            <label class="flex items-center gap-2 text-xs text-slate-600">
+              <input type="checkbox" :checked="postMealChecked()" @change="exerciseForm.postMeal = $event.target.checked" />
+              飯後 2 小時內的活動（計入餐後活動；依開始時間自動判斷，可手動改）
+            </label>
+            <input
+              v-model="exerciseForm.note"
+              type="text"
+              placeholder="選填備註（如：坡度 3%、時速 5.5 km、重訓組數）"
+              class="w-full rounded-lg border border-slate-300 bg-white p-2 text-sm text-slate-800"
+              @keyup.enter="addExerciseLog()"
+            />
+          </div>
+        </details>
+
+        <button
+          type="button"
+          class="w-full rounded-xl bg-teal-600 py-2.5 text-sm font-medium text-white active:bg-teal-700"
+          @click="addExerciseLog()"
+        >
+          ➕ 新增運動
+        </button>
         <p v-if="exerciseManageError" class="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">{{ exerciseManageError }}</p>
       </div>
 
@@ -1933,11 +1979,25 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       <!-- Normal mode: one-click presets + modifier tags -->
       <template v-if="!editMode">
         <div class="mt-3 space-y-2">
-          <div v-for="(list, cat) in presetGroups" :key="cat">
-            <p class="mb-1 text-xs font-medium text-slate-400">{{ cat }}</p>
+          <!-- One category at a time: a row of category tabs, then that category's presets. -->
+          <div v-if="presetCategories.length > 1" class="flex flex-wrap gap-1" role="tablist" data-testid="preset-tabs">
+            <button
+              v-for="cat in presetCategories"
+              :key="cat"
+              type="button"
+              role="tab"
+              :aria-selected="shownPresetCategory === cat"
+              class="rounded-lg px-3 py-1 text-xs font-medium"
+              :class="shownPresetCategory === cat ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600 active:bg-slate-200'"
+              @click="presetCategory = cat"
+            >
+              {{ cat }}
+            </button>
+          </div>
+          <div v-if="presetGroups[shownPresetCategory]">
             <div class="flex flex-wrap gap-2">
               <button
-                v-for="p in list"
+                v-for="p in presetGroups[shownPresetCategory]"
                 :key="p.id"
                 class="rounded-full border px-3 py-1.5 text-sm active:bg-teal-100"
                 :class="mealText === p.description ? 'border-teal-600 bg-teal-50 text-teal-800' : 'border-slate-300 text-slate-700'"

@@ -1253,11 +1253,14 @@ const qrCountdownLabel = computed(() => {
                 @click="resetToToday"
               >↩ 回到今天</button>
             </div>
-            <div v-if="hasSelectedDayRecord" class="mt-2 flex justify-end">
+            <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <!-- DailyTracker teleports its compact "不舒服" button here while the day has no sick record. -->
+              <div id="day-actions-slot" class="empty:hidden"></div>
               <button
+                v-if="hasSelectedDayRecord"
                 type="button"
                 data-testid="delete-day"
-                class="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-rose-300 hover:bg-rose-50 active:bg-rose-100 disabled:opacity-50"
+                class="ml-auto rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-rose-300 hover:bg-rose-50 active:bg-rose-100 disabled:opacity-50"
                 :disabled="deletingDay"
                 :aria-label="`刪除 ${selectedDate} 這天的紀錄`"
                 @click="deleteSelectedDay"
