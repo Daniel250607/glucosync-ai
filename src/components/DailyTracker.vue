@@ -1764,18 +1764,9 @@ function subTabClass(id) {
       </div>
     </section>
 
-    <!-- Exercise (Flexible + Preset Editor) -->
+    <!-- Exercise: three cards (overview, today's logs, add form / preset editor) so each part reads separately -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('exercise')">
-      <div class="flex items-center justify-between gap-2">
-        <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
-        <button
-          class="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium"
-          :class="exerciseEditMode ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 active:bg-slate-200'"
-          @click="exerciseEditMode = !exerciseEditMode"
-        >
-          {{ exerciseEditMode ? '✓ 完成編輯' : '⚙️ 編輯運動快選' }}
-        </button>
-      </div>
+      <h2 class="font-semibold text-slate-800">🏃 運動概況</h2>
       <!-- Today's progress: post-meal activity, rolling 7 days vs the weekly targets, today's totals -->
       <div class="mt-3 space-y-2.5 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200" data-testid="ex-progress">
         <div>
@@ -1838,14 +1829,20 @@ function subTabClass(id) {
           最近一次尿酮 {{ ketone.value }}（{{ ketone.date }}）不是陰性：先以輕鬆到中等強度為主，不要做費力運動，也不要空腹運動；飯後運動比較安全，記得補水。
         </p>
       </details>
+    </section>
 
-      <!-- Exercise logs list (above the form so today's entries are seen first) -->
-      <div v-if="day.exercise_logs?.length" class="mt-3" data-testid="ex-logs">
-        <div class="flex items-center justify-between">
-          <p class="text-xs font-semibold text-slate-600">今日運動明細</p>
-          <button class="text-xs text-rose-500 active:text-rose-600" @click="clearExerciseLogs">清空當日運動</button>
+    <!-- Exercise logs list (above the form so today's entries are seen first) -->
+    <section
+      v-if="day.exercise_logs?.length"
+      class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200"
+      :class="subTabClass('exercise')"
+      data-testid="ex-logs"
+    >
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="font-semibold text-slate-800">📋 今日運動明細</h2>
+          <button class="shrink-0 text-xs text-rose-500 active:text-rose-600" @click="clearExerciseLogs">清空當日運動</button>
         </div>
-        <ul class="mt-1 divide-y divide-slate-100">
+        <ul class="mt-2 divide-y divide-slate-100">
           <li v-for="log in exerciseLogsSorted" :key="log.id" class="flex items-start gap-2 py-1.5 text-sm">
             <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
             <div class="min-w-0 flex-1">
@@ -1871,14 +1868,24 @@ function subTabClass(id) {
             <button class="px-2 text-slate-300 active:text-rose-500" @click="removeExerciseLog(log.id)">✕</button>
           </li>
         </ul>
+    </section>
+
+    <!-- Add exercise form, or the preset editor in edit mode -->
+    <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('exercise')">
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="font-semibold text-slate-800">{{ exerciseEditMode ? '⚙️ 編輯運動快選' : '➕ 新增運動' }}</h2>
+        <button
+          class="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium"
+          :class="exerciseEditMode ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 active:bg-slate-200'"
+          @click="exerciseEditMode = !exerciseEditMode"
+        >
+          {{ exerciseEditMode ? '✓ 完成編輯' : '⚙️ 編輯運動快選' }}
+        </button>
       </div>
 
-      <!-- Normal mode -->
-      <div v-if="!exerciseEditMode" class="mt-4 space-y-3">
-        <div class="flex items-center gap-2">
-          <p class="shrink-0 text-xs font-semibold text-slate-600">新增運動</p>
-          <div class="h-px flex-1 bg-slate-200"></div>
-        </div>
+      <!-- Normal mode: numbered steps so the form reads top to bottom -->
+      <div v-if="!exerciseEditMode" class="mt-3 space-y-3">
+        <p class="text-xs font-semibold text-slate-700">① 選運動</p>
         <div v-if="exerciseChipTabs.length" class="flex gap-4 border-b border-slate-200" role="tablist" data-testid="ex-chip-tabs">
           <button
             v-for="tab in exerciseChipTabs"
@@ -1989,8 +1996,8 @@ function subTabClass(id) {
         </div>
 
         <!-- Talk-test intensity (aerobic only) -->
-        <div v-if="currentCategory === 'aerobic'" class="space-y-1" data-testid="ex-intensity">
-          <p class="text-xs text-slate-500">強度（講話測試）</p>
+        <div v-if="currentCategory === 'aerobic'" class="space-y-1.5 border-t border-slate-100 pt-3" data-testid="ex-intensity">
+          <p class="text-xs font-semibold text-slate-700">② 強度<span class="ml-1 font-normal text-slate-500">（講話測試）</span></p>
           <div class="grid grid-cols-3 gap-1.5">
             <button
               v-for="i in INTENSITIES"
@@ -2007,7 +2014,10 @@ function subTabClass(id) {
           <p v-if="exerciseForm.intensity === 'vigorous' && ketone" class="text-xs text-amber-700">尿酮還不是陰性，先不要做費力運動。</p>
         </div>
 
-        <div>
+        <div class="space-y-1.5 border-t border-slate-100 pt-3">
+          <p class="text-xs font-semibold text-slate-700">
+            {{ currentCategory === 'aerobic' ? '③' : '②' }} {{ exerciseForm.mode === 'reps' ? '次數' : '時間' }}
+          </p>
           <div v-if="exerciseForm.mode !== 'reps'" class="flex flex-wrap items-center gap-1.5">
             <input
               v-model="exerciseForm.duration"
