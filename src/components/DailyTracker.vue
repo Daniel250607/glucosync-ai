@@ -34,7 +34,15 @@ import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
 import { moveItem, sameOrder } from '../data/reorder.js'
 import { changeWater, lastWaterTime, minutesBetween, removeWaterLog, undoWaterChange, untimedWaterCc, waterLogs } from '../data/waterLog.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
-import { exerciseDay, exerciseWeek, isAfterMeal, isPostMealLog, ketoneCaution, logCredit } from '../data/exercise.js'
+import {
+  exerciseDay,
+  exerciseWeek,
+  frequentExerciseTypes,
+  isAfterMeal,
+  isPostMealLog,
+  ketoneCaution,
+  logCredit,
+} from '../data/exercise.js'
 import { RULES } from '../data/targetRules.js'
 
 const props = defineProps({
@@ -479,6 +487,31 @@ const exerciseOtherOpen = ref(false)
 const customExerciseType = computed(
   () => exerciseOtherOpen.value || (!!exerciseForm.type && !live.exerciseTypes.includes(exerciseForm.type)),
 )
+
+// Quick-select tabs: "⭐ 常用" (most logged in the last 30 days, filled up in list order) plus one tab per
+// category. Tabs only appear once the list is longer than the 常用 tab; each visit starts on 常用.
+const FREQUENT_EXERCISE_LIMIT = 8
+const exerciseChipTab = ref('frequent')
+const exerciseChipTabs = computed(() => {
+  if (live.exerciseTypes.length <= FREQUENT_EXERCISE_LIMIT) return []
+  const used = new Set(live.exerciseTypes.map((t) => exerciseProfile(t).category))
+  return [
+    { value: 'frequent', label: '⭐ 常用' },
+    ...EXERCISE_CATEGORIES.filter((c) => used.has(c.value)).map((c) => ({ value: c.value, label: c.label })),
+  ]
+})
+const shownExerciseChipTab = computed(() =>
+  exerciseChipTabs.value.some((t) => t.value === exerciseChipTab.value) ? exerciseChipTab.value : 'frequent',
+)
+const shownExerciseTypes = computed(() => {
+  if (!exerciseChipTabs.value.length) return live.exerciseTypes
+  if (shownExerciseChipTab.value === 'frequent') {
+    return frequentExerciseTypes({ ...props.days, [props.day.date]: props.day }, props.day.date, live.exerciseTypes, {
+      limit: FREQUENT_EXERCISE_LIMIT,
+    })
+  }
+  return live.exerciseTypes.filter((t) => exerciseProfile(t).category === shownExerciseChipTab.value)
+})
 
 function setExerciseMode(mode) {
   exerciseForm.mode = mode === 'reps' ? 'reps' : 'duration'
@@ -1772,9 +1805,23 @@ function subTabClass(id) {
 
       <!-- Normal mode -->
       <div v-if="!exerciseEditMode" class="mt-3 space-y-3">
+        <div v-if="exerciseChipTabs.length" class="flex flex-wrap gap-1" role="tablist" data-testid="ex-chip-tabs">
+          <button
+            v-for="tab in exerciseChipTabs"
+            :key="tab.value"
+            type="button"
+            role="tab"
+            :aria-selected="shownExerciseChipTab === tab.value"
+            class="rounded-lg px-3 py-1 text-xs font-medium"
+            :class="shownExerciseChipTab === tab.value ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600 active:bg-slate-200'"
+            @click="exerciseChipTab = tab.value"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
         <div class="flex flex-wrap gap-1.5">
           <button
-            v-for="t in live.exerciseTypes"
+            v-for="t in shownExerciseTypes"
             :key="t"
             type="button"
             class="rounded-full border px-3 py-1 text-xs transition-colors"

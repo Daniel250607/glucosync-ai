@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { exerciseDay, exerciseWeek, isAfterMeal, isPostMealLog, keysEnding, ketoneCaution, logCredit, longestRestRun, shiftDateKey } from '../exercise.js'
+import {
+  exerciseDay,
+  exerciseWeek,
+  frequentExerciseTypes,
+  isAfterMeal,
+  isPostMealLog,
+  keysEnding,
+  ketoneCaution,
+  logCredit,
+  longestRestRun,
+  shiftDateKey,
+} from '../exercise.js'
 import { applyCustomConfig, takesSglt2Inhibitor } from '../presets.js'
 import { latestLabSnapshot } from '../labContext.js'
 import { buildReport, complianceDefs, dayFlags, exerciseReport } from '../report.js'
@@ -8,6 +19,20 @@ import { exerciseContextLines, summarizeDay } from '../../services/gemini.js'
 afterEach(() => applyCustomConfig({}))
 
 const log = (o) => ({ type: '運動', actual_min: 10, duration_min: 10, ...o })
+
+describe('frequentExerciseTypes', () => {
+  const types = ['A', 'B', 'C', 'D']
+  const day = (...names) => ({ exercise_logs: names.map((type) => ({ type })) })
+  it('sorts by log count in the window, ties keep list order, then fills with unused types', () => {
+    const days = { '2026-11-27': day('C', 'C', 'B'), '2026-11-20': day('D', '其他自訂') }
+    expect(frequentExerciseTypes(days, '2026-11-27', types, { limit: 3 })).toEqual(['C', 'B', 'D'])
+    expect(frequentExerciseTypes(days, '2026-11-27', types)).toEqual(['C', 'B', 'D', 'A'])
+  })
+  it('ignores logs outside the window and deleted days', () => {
+    const days = { '2026-10-01': day('D'), '2026-11-27': { ...day('C'), deleted: true } }
+    expect(frequentExerciseTypes(days, '2026-11-27', types, { windowDays: 30 })).toEqual(types)
+  })
+})
 
 describe('logCredit', () => {
   it('moderate aerobic counts 1:1, vigorous double, light goes to light activity', () => {

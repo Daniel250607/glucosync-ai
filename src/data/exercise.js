@@ -122,6 +122,31 @@ export function exerciseWeek(days, endKey) {
   return out
 }
 
+/**
+ * Quick-select types logged most often in the `windowDays` days ending at `endKey`, most first
+ * (ties keep the quick-select order), at most `limit`. Only types in `types` count. When fewer than
+ * `limit` were logged, the rest is filled with unused types in quick-select order, so the "常用" tab
+ * is never nearly empty (e.g. right after installing).
+ */
+export function frequentExerciseTypes(days, endKey, types, { windowDays = 30, limit = 8 } = {}) {
+  const list = Array.isArray(types) ? types : []
+  const count = new Map(list.map((t) => [t, 0]))
+  for (const k of keysEnding(endKey, windowDays)) {
+    const day = dayAt(days, k)
+    if (!day || day.deleted || !Array.isArray(day.exercise_logs)) continue
+    for (const log of day.exercise_logs) {
+      if (log && count.has(log.type)) count.set(log.type, count.get(log.type) + 1)
+    }
+  }
+  const used = list
+    .map((t, i) => ({ t, i, n: count.get(t) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n || a.i - b.i)
+    .map((x) => x.t)
+  const unused = list.filter((t) => !(count.get(t) > 0))
+  return [...used, ...unused].slice(0, limit)
+}
+
 /** Longest run of consecutive days without aerobic minutes inside `keys` (days without records count as rest). */
 export function longestRestRun(days, keys) {
   let best = 0
