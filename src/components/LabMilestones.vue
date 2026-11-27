@@ -325,7 +325,7 @@ function subTabClass(id) {
         >{{ t.done ? '✓ ' : '' }}{{ t.badge }}</span>
       </button>
     </nav>
-    <div class="min-w-0 space-y-4 md:flex-1">
+    <div class="gs-lab-content min-w-0 space-y-4 md:flex-1">
     <!-- Overview: baseline vs targets -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('overview')">
       <div class="flex flex-wrap items-center justify-between gap-2">
