@@ -72,6 +72,7 @@ import {
   DEFAULT_THINKING_BUDGET,
   GEMINI_MODEL_OPTIONS,
   GROK_MODEL_OPTIONS,
+  modelOverride,
   normalizeProvider,
   THINKING_LEVEL_OPTIONS,
   normalizeThinkingBudget,
@@ -352,23 +353,24 @@ const showApiKey = ref(false)
 const settings = reactive({
   geminiApiKey: '',
   firebaseConfig: '',
-  geminiModel: DEFAULT_GEMINI_MODEL,
+  geminiModel: '', // '' = follow the app default (DEFAULT_GEMINI_MODEL)
   thinkingBudget: DEFAULT_THINKING_BUDGET,
   aiProvider: 'gemini',
   grokApiKey: '',
-  grokModel: DEFAULT_GROK_MODEL,
+  grokModel: '', // '' = follow the app default (DEFAULT_GROK_MODEL)
   healthContext: '',
 })
 /** Copy the AI-related fields from saved settings into the settings form. */
 function loadAiSettingsForm(s = loadSettings()) {
   settings.geminiApiKey = s.geminiApiKey || ''
-  settings.geminiModel = s.geminiModel || DEFAULT_GEMINI_MODEL
+  // A saved model equal to the default (older versions always stored it) is shown as blank = follow default.
+  settings.geminiModel = modelOverride(s.geminiModel, DEFAULT_GEMINI_MODEL)
   settings.thinkingBudget = normalizeThinkingBudget(
     s.thinkingBudget != null && s.thinkingBudget !== '' ? s.thinkingBudget : DEFAULT_THINKING_BUDGET,
   )
   settings.aiProvider = normalizeProvider(s.aiProvider)
   settings.grokApiKey = s.grokApiKey || ''
-  settings.grokModel = s.grokModel || DEFAULT_GROK_MODEL
+  settings.grokModel = modelOverride(s.grokModel, DEFAULT_GROK_MODEL)
 }
 const settingsError = ref('')
 const pendingPairBanner = ref(false)
@@ -457,7 +459,7 @@ function submitFirebaseSetup() {
     ...prev,
     geminiApiKey: prev.geminiApiKey || '',
     firebaseConfig: text,
-    geminiModel: prev.geminiModel || DEFAULT_GEMINI_MODEL,
+    geminiModel: modelOverride(prev.geminiModel, DEFAULT_GEMINI_MODEL),
     thinkingBudget: normalizeThinkingBudget(prev.thinkingBudget),
   })
   showFirebaseSetup.value = false
@@ -623,11 +625,11 @@ function submitSettings() {
     ...prev,
     geminiApiKey: settings.geminiApiKey.trim(),
     firebaseConfig: text,
-    geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+    geminiModel: modelOverride(settings.geminiModel, DEFAULT_GEMINI_MODEL),
     thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
     aiProvider: normalizeProvider(settings.aiProvider),
     grokApiKey: settings.grokApiKey.trim(),
-    grokModel: settings.grokModel.trim() || DEFAULT_GROK_MODEL,
+    grokModel: modelOverride(settings.grokModel, DEFAULT_GROK_MODEL),
     healthContext: settings.healthContext.trim(),
   })
   // Only write an override when something actually differs from the current effective config.
@@ -965,11 +967,11 @@ async function generateQrPairing() {
       const enc = await encryptJson(
         {
           geminiKey: settings.geminiApiKey.trim(),
-          geminiModel: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+          geminiModel: modelOverride(settings.geminiModel, DEFAULT_GEMINI_MODEL),
           thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
           aiProvider: normalizeProvider(settings.aiProvider),
           grokKey: settings.grokApiKey.trim(),
-          grokModel: settings.grokModel.trim() || DEFAULT_GROK_MODEL,
+          grokModel: modelOverride(settings.grokModel, DEFAULT_GROK_MODEL),
         },
         keyBytes,
       )
@@ -1009,11 +1011,11 @@ async function generateQrPairing() {
         n,
         exp: expiresAt,
         gk: settings.geminiApiKey.trim(),
-        gm: settings.geminiModel.trim() || DEFAULT_GEMINI_MODEL,
+        gm: modelOverride(settings.geminiModel, DEFAULT_GEMINI_MODEL),
         tb: normalizeThinkingBudget(settings.thinkingBudget),
         ap: normalizeProvider(settings.aiProvider),
         xk: settings.grokApiKey.trim() || undefined,
-        xm: settings.grokApiKey.trim() ? settings.grokModel.trim() || DEFAULT_GROK_MODEL : undefined,
+        xm: settings.grokApiKey.trim() ? modelOverride(settings.grokModel, DEFAULT_GROK_MODEL) : undefined,
         fb: fbObj || undefined,
       }
       qrPair.mode = 'local'
@@ -1367,7 +1369,7 @@ const qrCountdownLabel = computed(() => {
                   type="text"
                   autocomplete="off"
                   spellcheck="false"
-                  :placeholder="DEFAULT_GROK_MODEL"
+                  :placeholder="`空白＝使用預設（${DEFAULT_GROK_MODEL}）`"
                   class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
                 />
               </label>
@@ -1377,13 +1379,13 @@ const qrCountdownLabel = computed(() => {
                   :key="m"
                   type="button"
                   class="rounded-full px-3 py-1.5 text-xs"
-                  :class="settings.grokModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
-                  @click="settings.grokModel = m"
+                  :class="(modelOverride(settings.grokModel, DEFAULT_GROK_MODEL) || DEFAULT_GROK_MODEL) === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+                  @click="settings.grokModel = modelOverride(m, DEFAULT_GROK_MODEL)"
                 >
-                  {{ m }}
+                  {{ m }}{{ m === DEFAULT_GROK_MODEL ? '（預設）' : '' }}
                 </button>
               </div>
-              <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GROK_MODEL }}（不推理，回應較快）。reasoning 模型較仔細但較慢。餐點照片需要支援圖片輸入的模型。</p>
+              <p class="mt-1 text-xs text-slate-400">留空會使用 App 的預設模型（目前是 {{ DEFAULT_GROK_MODEL }}，不推理、回應較快），App 更新預設時會自動跟著換；只有想固定用某個模型時才需要填。reasoning 模型較仔細但較慢。餐點照片需要支援圖片輸入的模型。</p>
             </template>
 
             <template v-else>
@@ -1412,7 +1414,7 @@ const qrCountdownLabel = computed(() => {
                 type="text"
                 autocomplete="off"
                 spellcheck="false"
-                placeholder="gemini-3.8-flash"
+                :placeholder="`空白＝使用預設（${DEFAULT_GEMINI_MODEL}）`"
                 class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm"
               />
             </label>
@@ -1422,13 +1424,13 @@ const qrCountdownLabel = computed(() => {
                 :key="m"
                 type="button"
                 class="rounded-full px-3 py-1.5 text-xs"
-                :class="settings.geminiModel === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
-                @click="settings.geminiModel = m"
+                :class="(modelOverride(settings.geminiModel, DEFAULT_GEMINI_MODEL) || DEFAULT_GEMINI_MODEL) === m ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700'"
+                @click="settings.geminiModel = modelOverride(m, DEFAULT_GEMINI_MODEL)"
               >
-                {{ m }}
+                {{ m }}{{ m === DEFAULT_GEMINI_MODEL ? '（預設）' : '' }}
               </button>
             </div>
-            <p class="mt-1 text-xs text-slate-400">預設 {{ DEFAULT_GEMINI_MODEL }}，亦可填入其他有效模型。</p>
+            <p class="mt-1 text-xs text-slate-400">留空會使用 App 的預設模型（目前是 {{ DEFAULT_GEMINI_MODEL }}），App 更新預設時會自動跟著換；只有想固定用某個模型時才需要填。</p>
 
             <p class="mt-4 text-sm font-medium text-slate-700">🧠 AI 思考程度</p>
             <p class="text-xs text-slate-400">越高越仔細但越慢；日常餐點紀錄用低檔即可。</p>

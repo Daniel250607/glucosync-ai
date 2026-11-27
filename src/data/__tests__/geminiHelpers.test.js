@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GROK_MODEL,
   grokRequestBody,
+  modelOverride,
   grokTimeoutMs,
   normalizeProvider,
   requestTimeoutMs,
@@ -58,6 +61,21 @@ describe('Grok provider helpers', () => {
     expect(normalizeProvider('grok')).toBe('grok')
     expect(normalizeProvider(undefined)).toBe('gemini')
     expect(normalizeProvider('other')).toBe('gemini')
+  })
+})
+
+describe('modelOverride', () => {
+  it('stores blank (= follow the app default) for empty input or the current default', () => {
+    expect(modelOverride('', DEFAULT_GROK_MODEL)).toBe('')
+    expect(modelOverride(undefined, DEFAULT_GROK_MODEL)).toBe('')
+    expect(modelOverride(null, DEFAULT_GEMINI_MODEL)).toBe('')
+    expect(modelOverride(`  ${DEFAULT_GROK_MODEL} `, DEFAULT_GROK_MODEL)).toBe('')
+    expect(modelOverride(DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)).toBe('')
+  })
+
+  it('keeps a model the user picked on purpose', () => {
+    expect(modelOverride(' grok-4.7 ', DEFAULT_GROK_MODEL)).toBe('grok-4.7')
+    expect(modelOverride('gemini-other', DEFAULT_GEMINI_MODEL)).toBe('gemini-other')
   })
 })
 

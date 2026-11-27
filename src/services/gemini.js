@@ -19,6 +19,15 @@ export const THINKING_LEVEL_OPTIONS = [
   { label: '高思考', budget: 8192, hint: '詳細檢驗解讀' },
 ]
 
+/**
+ * Model ID to store in settings: '' (= follow the app default) when blank or equal to the current default,
+ * so a later change of the default reaches users who never picked a model themselves.
+ */
+export function modelOverride(value, defaultModel) {
+  const v = String(value ?? '').trim()
+  return v === defaultModel ? '' : v
+}
+
 export function getGeminiModel() {
   return (loadSettings().geminiModel || '').trim() || DEFAULT_GEMINI_MODEL
 }

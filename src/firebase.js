@@ -523,12 +523,13 @@ export function applyPairedSettings({ geminiKey, geminiModel, thinkingBudget, fi
   saveSettings({
     ...prev,
     geminiApiKey: geminiKey != null ? String(geminiKey) : prev.geminiApiKey || '',
-    geminiModel: String(geminiModel || '').trim() || prev.geminiModel || '',
+    // A model field that is present ('' = follow the app default) is applied; a missing one keeps this device's.
+    geminiModel: geminiModel != null ? String(geminiModel).trim() : prev.geminiModel || '',
     thinkingBudget: thinkingBudget != null ? thinkingBudget : prev.thinkingBudget,
     // Older QR codes carry no provider fields: keep this device's current choice.
     aiProvider: aiProvider === 'grok' || aiProvider === 'gemini' ? aiProvider : prev.aiProvider || 'gemini',
     grokApiKey: grokKey != null ? String(grokKey) : prev.grokApiKey || '',
-    grokModel: String(grokModel || '').trim() || prev.grokModel || '',
+    grokModel: grokModel != null ? String(grokModel).trim() : prev.grokModel || '',
     firebaseConfig: fbText,
   })
 }
