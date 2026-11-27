@@ -1592,7 +1592,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             v-model="exerciseForm.type"
             type="text"
             placeholder="運動類型 (可自行輸入)"
-            class="rounded-lg border border-slate-300 p-2 text-sm text-slate-800 sm:col-span-4"
+            class="self-start rounded-lg border border-slate-300 p-2 text-sm text-slate-800 sm:col-span-4"
           />
           <div v-if="exerciseForm.mode !== 'reps'" class="flex flex-wrap items-center gap-1.5 sm:col-span-8">
             <input
@@ -1603,7 +1603,6 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               class="w-20 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
             />
             <span class="text-xs text-slate-500">分</span>
-            <span class="text-xs font-medium text-indigo-700">{{ creditPreview }} · 約 {{ kcalPreview }} kcal</span>
             <button
               type="button"
               class="rounded-lg bg-teal-50 px-2.5 py-2 text-xs font-medium text-teal-800 ring-1 ring-teal-200 active:bg-teal-100"
@@ -1664,11 +1663,11 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             >
               +100下
             </button>
-            <span class="text-xs font-medium text-indigo-700">
-              約 {{ repsActualPreview }} 分（每分鐘 {{ currentProfile.repsPerMin }} 下）· {{ creditPreview }} · 約 {{ kcalPreview }} kcal
-            </span>
           </div>
         </div>
+        <p class="text-xs font-medium text-indigo-700" data-testid="ex-credit-preview">
+          <template v-if="exerciseForm.mode === 'reps'">約 {{ repsActualPreview }} 分（每分鐘 {{ currentProfile.repsPerMin }} 下）· </template>{{ creditPreview }} · 約 {{ kcalPreview }} kcal
+        </p>
 
         <div class="flex gap-2">
           <input
