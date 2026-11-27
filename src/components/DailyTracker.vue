@@ -1097,7 +1097,7 @@ const shownPresetCategory = computed(() =>
   presetCategories.value.includes(presetCategory.value) ? presetCategory.value : presetCategories.value[0] || '',
 )
 
-// ---------- phone sub-tabs: one group of cards at a time; wide screens (md+) still show every card ----------
+// ---------- sub-tabs: one group of cards at a time (phone and desktop) ----------
 const SUB_TAB_KEY = 'glucosync_daily_subtab'
 const SUB_TAB_IDS = ['meal', 'water', 'meds', 'exercise', 'summary']
 function loadSubTab() {
@@ -1127,9 +1127,9 @@ const subTabs = computed(() => {
     { id: 'summary', label: '🧠 總結', badge: props.day.ai_summary ? '已產生' : '—', done: false },
   ]
 })
-/** Cards outside the chosen sub-tab are hidden on phones only. */
+/** Cards outside the chosen sub-tab are hidden (kept mounted, so half-typed input survives a switch). */
 function subTabClass(id) {
-  return subTab.value === id ? '' : 'hidden md:block'
+  return subTab.value === id ? '' : 'hidden'
 }
 </script>
 
@@ -1218,8 +1218,8 @@ function subTabClass(id) {
       </div>
     </section>
 
-    <!-- Phone sub-tabs (hidden on wide screens, which show every card) -->
-    <nav class="grid grid-cols-5 gap-1 rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200 md:hidden" data-testid="daily-subtabs">
+    <!-- Sub-tabs: one group of cards at a time -->
+    <nav class="grid grid-cols-5 gap-1 rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200" data-testid="daily-subtabs">
       <button
         v-for="t in subTabs"
         :key="t.id"
