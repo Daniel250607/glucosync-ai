@@ -525,6 +525,7 @@ const TARGET_FIELDS = [
   { label: '碳水 最高 (g)', key: 'carbsMax' },
   { label: '飽和脂肪 警示 (g)', key: 'satFatMin' },
   { label: '飽和脂肪 上限 (g)', key: 'satFatMax' },
+  { label: '鈉 上限 (mg)', key: 'sodiumMax' },
   { label: '目前體重 (kg)', key: 'userWeight' },
   { label: '身高 (cm，0＝未設定)', key: 'userHeight' },
   { label: '飲水 下限 (cc)', key: 'hydrationMin', readonly: true },

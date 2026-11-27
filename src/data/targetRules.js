@@ -32,6 +32,17 @@ export const RULES = {
     met: { warnPct: 7, maxPct: 10 },
     source: '血脂指引：LDL-C 未達標時飽和脂肪 < 7% 熱量；一般與糖尿病指引 < 10% 熱量',
   },
+  sodium: {
+    // ADA Standards of Care: < 2300 mg/day (same as the general population).
+    // KDIGO 2022 diabetes in CKD: < 2000 mg/day once the kidneys are involved (UAcr >= 30 or eGFR < 60).
+    max: 2300,
+    kidneyMax: 2000,
+    egfrLimit: 60,
+    // mg of sodium in 1 g of table salt (NaCl is about 39.3% sodium).
+    mgPerGramSalt: 393,
+    source: 'ADA 糖尿病照護標準：每日鈉 < 2300 mg',
+    kidneySource: 'KDIGO 糖尿病合併腎臟病指引：每日鈉 < 2000 mg',
+  },
   exercise: {
     // ADA Standards of Care (physical activity): >= 150 min/week of moderate-to-vigorous aerobic activity
     // over >= 3 days with no more than 2 consecutive days off; 2-3 strength sessions/week on non-consecutive
@@ -73,7 +84,7 @@ export function estimateEnergy(weightKg, heightCm, rules = RULES) {
 
 /**
  * Targets from fixed rules. `snapshot` is latestLabSnapshot() output (latest value per lab field).
- * Returns { targets: { carbsMin, carbsMax, satFatMin, satFatMax }, energy, reasons: [{ key, label, text }], notices: [string] }.
+ * Returns { targets: { carbsMin, carbsMax, satFatMin, satFatMax, sodiumMax }, energy, reasons: [{ key, label, text }], notices: [string] }.
  * Hydration (weight-based) and exercise (RULES.exercise, see exercise.js) are not lab-driven and stay as configured.
  */
 export function computeRuleTargets({ snapshot = [], weight, height }, rules = RULES) {
@@ -109,6 +120,22 @@ export function computeRuleTargets({ snapshot = [], weight, height }, rules = RU
     text: `${ldlText} → 警示 ${pct.warnPct}%、上限 ${pct.maxPct}% 熱量（${satFatMin} / ${satFatMax} g）。依據：${rules.satFat.source}`,
   })
 
+  // Sodium: stricter once the kidneys are involved (latest UAcr or eGFR).
+  const uacr = row('uacr')
+  const egfr = row('egfr')
+  const kidneyReasons = []
+  if (uacr && Number(uacr.latest) >= rules.uacrLimit) kidneyReasons.push(`UAcr ${uacr.latest}（${uacr.latestDate}）≥ ${rules.uacrLimit}`)
+  if (egfr && Number(egfr.latest) < rules.sodium.egfrLimit) kidneyReasons.push(`eGFR ${egfr.latest}（${egfr.latestDate}）< ${rules.sodium.egfrLimit}`)
+  const sodiumMax = kidneyReasons.length ? rules.sodium.kidneyMax : rules.sodium.max
+  const salt = (mg) => Math.round((mg / rules.sodium.mgPerGramSalt) * 10) / 10
+  reasons.push({
+    key: 'sodium',
+    label: '鈉',
+    text: kidneyReasons.length
+      ? `${kidneyReasons.join('、')} → 上限 ${sodiumMax} mg（約鹽 ${salt(sodiumMax)} g）。依據：${rules.sodium.kidneySource}`
+      : `UAcr、eGFR 未達腎臟病門檻（或尚無資料）→ 上限 ${sodiumMax} mg（約鹽 ${salt(sodiumMax)} g）；UAcr ≥ ${rules.uacrLimit} 或 eGFR < ${rules.sodium.egfrLimit} 時收緊為 ${rules.sodium.kidneyMax} mg。依據：${rules.sodium.source}`,
+  })
+
   // Reminders only.
   const ket = row('u_ketones')
   if (ket && ket.status === 'positive') {
@@ -118,16 +145,15 @@ export function computeRuleTargets({ snapshot = [], weight, height }, rules = RU
   if (tg && Number(tg.latest) >= rules.tgLimit) {
     notices.push(`TG ${tg.latest}（${tg.latestDate}）≥ ${rules.tgLimit}：少吃添加糖、果汁、精緻澱粉，少喝酒。`)
   }
-  const uacr = row('uacr')
   if (uacr && Number(uacr.latest) >= rules.uacrLimit) {
-    notices.push(`UAcr ${uacr.latest}（${uacr.latestDate}）≥ ${rules.uacrLimit}：蛋白質不要過量（約每公斤 ${rules.proteinGPerKg} g），少吃鹽。`)
+    notices.push(`UAcr ${uacr.latest}（${uacr.latestDate}）≥ ${rules.uacrLimit}：蛋白質不要過量（約每公斤 ${rules.proteinGPerKg} g），鈉控制在 ${sodiumMax} mg 以下。`)
   }
   const sg = row('u_sg')
   if (sg && Number(sg.latest) > rules.uSgMax) {
     notices.push(`尿比重 ${sg.latest}（${sg.latestDate}）> ${rules.uSgMax}：飲水往上限喝。`)
   }
 
-  return { targets: { carbsMin, carbsMax, satFatMin, satFatMax }, energy, reasons, notices }
+  return { targets: { carbsMin, carbsMax, satFatMin, satFatMax, sodiumMax }, energy, reasons, notices }
 }
 
 /** computeRuleTargets for the current lab records and the live weight / height. */
@@ -143,7 +169,7 @@ export function ruleTargetsFor(labs, overrides = {}) {
 export function ruleTargetLines(result) {
   const t = result.targets
   return [
-    `Rule-based daily targets computed by the app from fixed guideline rules (the AI must NOT propose different numbers): carbohydrate ${t.carbsMin}-${t.carbsMax} g, saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, estimated energy ${result.energy.kcal} kcal/day.`,
+    `Rule-based daily targets computed by the app from fixed guideline rules (the AI must NOT propose different numbers): carbohydrate ${t.carbsMin}-${t.carbsMax} g, saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, sodium < ${t.sodiumMax} mg, estimated energy ${result.energy.kcal} kcal/day.`,
     `Rule explanations shown to the user (Traditional Chinese): ${JSON.stringify(result.reasons.map((r) => `${r.label}：${r.text}`))}`,
     ...(result.notices.length ? [`Lab-based reminders shown to the user: ${JSON.stringify(result.notices)}`] : []),
   ]

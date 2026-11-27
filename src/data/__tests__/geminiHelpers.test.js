@@ -100,6 +100,11 @@ describe('targetSafetyWarnings', () => {
     expect(w[0]).toContain('130 g')
     expect(w[2]).toContain('15 g')
   })
+  it('warns when the sodium limit is above the rule result (2300 mg without one)', () => {
+    expect(targetSafetyWarnings({ sodiumMax: 2000 }, { targets: { sodiumMax: 2000 } })).toEqual([])
+    expect(targetSafetyWarnings({ sodiumMax: 2300 }, { targets: { sodiumMax: 2000 } })[0]).toContain('2000 mg')
+    expect(targetSafetyWarnings({ sodiumMax: 3000 })[0]).toContain('2300 mg')
+  })
   it('skips the saturated-fat check without a rule result', () => {
     expect(targetSafetyWarnings({ carbsMin: 130, carbsMax: 180, satFatMax: 30 })).toEqual([])
   })

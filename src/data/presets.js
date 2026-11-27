@@ -24,6 +24,8 @@ export const TARGETS = {
   // low-carb eating on an SGLT-2 inhibitor); upper bound = 4 carb exchanges per meal x 3.
   carbsMin: 130,
   carbsMax: 180,
+  // Sodium limit (mg/day), see RULES.sodium in targetRules.js: 2300, or 2000 with kidney involvement.
+  sodiumMax: 2300,
 }
 
 export const PRESETS = [

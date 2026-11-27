@@ -223,7 +223,12 @@ const ruleResult = computed(() => ruleTargetsFor(props.labs))
 const RULE_ROWS = [
   { label: '碳水 (g)', min: 'carbsMin', max: 'carbsMax' },
   { label: '飽和脂肪 警示 / 上限 (g)', min: 'satFatMin', max: 'satFatMax' },
+  { label: '鈉 上限 (mg)', max: 'sodiumMax' },
 ]
+/** "a–b" for a range row, "≤ b" for a limit-only row. */
+function ruleRange(r, t) {
+  return r.min ? `${t[r.min]}–${t[r.max]}` : `≤ ${t[r.max]}`
+}
 const targetsMatch = computed(() =>
   Object.entries(ruleResult.value.targets).every(([k, v]) => Number(live.targets[k]) === Number(v)),
 )
@@ -543,10 +548,10 @@ function subTabClass(id) {
       <h2 class="font-semibold text-slate-800">📏 依檢驗規則的每日目標</h2>
       <p class="text-xs text-slate-500">依最新檢驗、體重與身高，用固定的指引規則計算；同樣的資料每次結果都相同。規則最後核對：{{ RULES.reviewed }}。</p>
       <dl class="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <div v-for="r in RULE_ROWS" :key="r.min" class="rounded-lg bg-slate-50 p-2">
+        <div v-for="r in RULE_ROWS" :key="r.max" class="rounded-lg bg-slate-50 p-2">
           <dt class="text-slate-500">{{ r.label }}</dt>
           <dd class="font-medium text-slate-800">
-            目前 {{ live.targets[r.min] }}–{{ live.targets[r.max] }} → 建議 {{ ruleResult.targets[r.min] }}–{{ ruleResult.targets[r.max] }}
+            目前 {{ ruleRange(r, live.targets) }} → 建議 {{ ruleRange(r, ruleResult.targets) }}
           </dd>
         </div>
       </dl>

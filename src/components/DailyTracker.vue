@@ -1275,6 +1275,9 @@ const DOT_STYLE = { green: 'bg-emerald-500', yellow: 'bg-amber-400', red: 'bg-ro
 const LEVEL_TEXT = { green: '綠燈', yellow: '黃燈', red: '紅燈' }
 
 const totals = computed(() => summarizeDay(props.day))
+// Daily sodium limit (RULES.sodium; applied from the lab page or set in settings). AI estimate, so a guide only.
+const sodiumMax = computed(() => Number(live.targets.sodiumMax) || 0)
+const sodiumOver = computed(() => sodiumMax.value > 0 && totals.value.sodium_mg > sodiumMax.value)
 const presetGroups = computed(() => {
   const g = {}
   for (const p of live.presets) (g[p.category] ||= []).push(p)
@@ -1310,7 +1313,7 @@ const subTabs = computed(() => {
   const meals = (props.day.meals || []).length
   const { done, total } = medDone.value
   return [
-    { id: 'meal', label: '🍱 餐點', badge: meals ? `${meals} 餐` : '—', done: false },
+    { id: 'meal', label: '🍱 餐點', badge: meals ? `${meals} 餐` : '—', done: false, warn: sodiumOver.value },
     { id: 'water', label: '💧 飲水', badge: `${effectiveWaterCc.value}cc`, done: hydrationReached.value },
     { id: 'meds', label: '💊 用藥', badge: total ? `${done}/${total}` : '—', done: total > 0 && done === total },
     { id: 'exercise', label: '🏃 運動', badge: `${Math.round(todayExercise.value.postMeal)} 分`, done: postMealReached.value },
@@ -1426,8 +1429,9 @@ function subTabClass(id) {
         <span class="block whitespace-nowrap text-xs font-semibold md:text-base">{{ t.label }}</span>
         <span
           class="block whitespace-nowrap text-[11px] md:text-xs"
-          :class="subTab === t.id ? 'text-teal-50' : t.done ? 'text-teal-600' : 'text-slate-400'"
-        >{{ t.done ? '✓ ' : '' }}{{ t.badge }}</span>
+          :class="subTab === t.id ? 'text-teal-50' : t.warn ? 'text-rose-600' : t.done ? 'text-teal-600' : 'text-slate-400'"
+          :title="t.warn ? '今日鈉已超過上限' : undefined"
+        >{{ t.done ? '✓ ' : '' }}{{ t.warn ? '⚠ ' : '' }}{{ t.badge }}</span>
       </button>
     </nav>
     <div class="gs-daily-content min-w-0 space-y-4 md:flex-1">
@@ -2686,9 +2690,15 @@ function subTabClass(id) {
       <div class="flex items-baseline justify-between">
         <h2 class="font-semibold text-slate-800">📋 今日餐點</h2>
         <span class="text-xs text-slate-500">
-          碳水 {{ totals.carbs_g }}g · 飽和脂肪 {{ totals.saturated_fat_g }}g · 鈉 {{ totals.sodium_mg }}mg
+          碳水 {{ totals.carbs_g }}g · 飽和脂肪 {{ totals.saturated_fat_g }}g ·
+          <span :class="sodiumOver ? 'font-semibold text-rose-600' : ''" data-testid="sodium-total">
+            鈉 {{ totals.sodium_mg }}<template v-if="sodiumMax"> / {{ sodiumMax }}</template>mg
+          </span>
         </span>
       </div>
+      <p v-if="sodiumOver" class="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+        ⚠ 今日鈉約 {{ totals.sodium_mg }} mg，超過上限 {{ sodiumMax }} mg（AI 估算，僅供參考）。下一餐少喝湯、少沾醬，避開醃漬與加工食品。
+      </p>
       <p v-if="!day.meals?.length" class="mt-3 text-sm text-slate-400">尚未記錄餐點。</p>
       <ul class="mt-2 divide-y divide-slate-100">
         <li v-for="m in mealsSorted" :key="m.id" class="flex items-start gap-2 py-2">

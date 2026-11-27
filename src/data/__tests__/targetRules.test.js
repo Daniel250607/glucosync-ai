@@ -35,6 +35,17 @@ describe('computeRuleTargets', () => {
     const met = computeRuleTargets({ snapshot: [row('ldl', 95)], weight: 65, height: 170 })
     expect(met.targets).toMatchObject({ satFatMin: 15, satFatMax: 21 })
   })
+  it('uses 2300 mg sodium normally and 2000 mg once UAcr >= 30 or eGFR < 60', () => {
+    const base = { weight: 70, height: 0 }
+    expect(computeRuleTargets({ ...base, snapshot: [] }).targets.sodiumMax).toBe(2300)
+    expect(computeRuleTargets({ ...base, snapshot: [row('uacr', 10), row('egfr', 85)] }).targets.sodiumMax).toBe(2300)
+    const uacr = computeRuleTargets({ ...base, snapshot: [row('uacr', 30)] })
+    expect(uacr.targets.sodiumMax).toBe(2000)
+    expect(uacr.reasons.find((x) => x.key === 'sodium').text).toContain('UAcr 30')
+    const egfr = computeRuleTargets({ ...base, snapshot: [row('egfr', 55)] })
+    expect(egfr.targets.sodiumMax).toBe(2000)
+    expect(egfr.reasons.find((x) => x.key === 'sodium').text).toContain('鹽 5.1 g')
+  })
   it('adds reminders for positive ketones, high TG, high UAcr and high urine specific gravity', () => {
     const r = computeRuleTargets({
       snapshot: [row('u_ketones', '++', { status: 'positive' }), row('tg', 160), row('uacr', 31), row('u_sg', 1.035)],
@@ -58,6 +69,7 @@ describe('computeRuleTargets', () => {
   it('prompt lines carry the numbers and forbid other proposals', () => {
     const lines = ruleTargetLines(computeRuleTargets({ snapshot: [], weight: 70, height: 0 }))
     expect(lines[0]).toContain('130-180 g')
+    expect(lines[0]).toContain('sodium < 2300 mg')
     expect(lines[0]).toContain('must NOT propose')
   })
 })

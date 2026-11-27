@@ -130,7 +130,7 @@ The safety rules below are UNCONDITIONAL. Lab improvements may soften tone and a
    - Severity: if latest LDL-C is above target, judge saturated fat against the lower warning level and be strict; if the LDL-C target is met, keep the configured limit but a more encouraging tone.
 3. Glycemia / triglycerides (latest HbA1c, AC Sugar and TG with trend and status: see LAB DATA): flag refined starch, sugary drinks, sauces with sugar, large rice/noodle portions, and fried foods. Encourage eating order: vegetables -> protein -> carbohydrate (half portion), and post-meal light activity (marching in place 15-20 min).
    - Severity: the further a latest value is above its target (status "above target"), the stricter the glycemic_tg_alert; "near target" or "target met" allows a milder tone and acknowledgement of progress, but carbohydrate never drops below the configured daily minimum and the eating order stays.
-4. Renal / urine (latest UAcr, Micro-Albumin, eGFR, Creatinine, BUN, Uric Acid, U-Specific Gravity, U-Sugar: see LAB DATA): monitor sodium (aim < 2300 mg/day, ~< 800 mg/meal) and hydration ({{HYDRATION}}). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.
+4. Renal / urine (latest UAcr, Micro-Albumin, eGFR, Creatinine, BUN, Uric Acid, U-Specific Gravity, U-Sugar: see LAB DATA): keep sodium under the user-configured daily limit (in the request; guideline < 2300 mg/day, < 2000 mg/day once UAcr >= 30 or eGFR < 60; roughly a third of the limit per main meal) and monitor hydration ({{HYDRATION}}). Flag soups, pickles, processed food, heavy sauces. Do not recommend high-protein excess.
    - Severity: if latest UAcr is not at target or U-Specific Gravity is out of range, emphasize sodium and hydration more strongly; hydration never goes below 2000 cc/day on an SGLT-2 inhibitor in any case.
 5. Never give a diagnosis, never interpret labs as a diagnosis, and never change or suggest changing medication doses. For medication questions or worrying lab values advise consulting the treating physician.
 6. Estimate nutrition honestly; when uncertain, give a reasonable estimate and say so in actionable_advice.
@@ -444,7 +444,7 @@ function userConfigLines() {
     .map((m) => `${medLabel(m)} (${m.timing === 'both' ? 'morning+evening' : m.timing})`)
     .join('; ')
   return [
-    `User-configured daily targets: carbohydrate ${t.carbsMin}-${t.carbsMax} g (never go ketogenic), saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, hydration ${t.hydrationMin}-${t.hydrationMax} cc (weight-based for ${hydrationBand().userWeight} kg, never below 2000 cc). Use these as the daily budgets.`,
+    `User-configured daily targets: carbohydrate ${t.carbsMin}-${t.carbsMax} g (never go ketogenic), saturated fat warning ${t.satFatMin} g / limit ${t.satFatMax} g, sodium < ${t.sodiumMax} mg, hydration ${t.hydrationMin}-${t.hydrationMax} cc (weight-based for ${hydrationBand().userWeight} kg, never below 2000 cc). Use these as the daily budgets.`,
     `Exercise targets: post-meal activity ${t.exerciseTarget} min/day (any intensity, dinner first); ${t.aerobicWeekTarget} min/week of moderate-or-higher aerobic activity (vigorous minutes count double) spread over at least ${RULES.exercise.aerobicMinDays} days with no more than ${RULES.exercise.maxRestDays} consecutive days off; strength training ${t.strengthWeekTarget} days/week on non-consecutive days. Intensity is self-rated with the talk test (moderate = can talk but not sing). Each exercise log's time is when the activity started; compare it with meal times to judge post-meal timing.`,
     `Current medication list configured by the user (treat as the current regimen): ${meds || 'none'}.`,
   ]
@@ -601,7 +601,6 @@ export async function summarizeDayAI({ apiKey, totals, meals, meds, labs = [] })
     'Refer to the actual items, portions and eating order of each meal (not only the meal names) in highlights and improvements.',
     'water_logs in the day totals are the times pure water was logged; mention long gaps without drinking if relevant.',
     `Medications taken: ${JSON.stringify(meds)}`,
-    'Sodium budget: < 2300 mg/day.',
     ...userConfigLines(),
     'If some meals were logged without nutrition analysis, say the totals are incomplete.',
     'Scale the severity of each alert to the latest lab values and trends in LAB DATA, while keeping every safety rule.',
@@ -771,6 +770,9 @@ export function targetSafetyWarnings(t = {}, rule = null) {
   if (Number.isFinite(ruleMax) && satFatMax > ruleMax) {
     out.push(`飽和脂肪上限 ${satFatMax} g 高於依檢驗規則算出的 ${ruleMax} g（LDL-C 控制）。`)
   }
+  const sodiumMax = num('sodiumMax')
+  const ruleSodium = Number(rule?.targets?.sodiumMax ?? RULES.sodium.max)
+  if (sodiumMax > ruleSodium) out.push(`鈉上限 ${sodiumMax} mg 高於依檢驗規則算出的 ${ruleSodium} mg。`)
   const aerobic = num('aerobicWeekTarget')
   if (aerobic < RULES.exercise.aerobicWeekMin) out.push(`每週有氧 ${aerobic} 分鐘低於指引的 ${RULES.exercise.aerobicWeekMin} 分鐘（剛開始可以先設低一點，再逐步增加）。`)
   const strength = num('strengthWeekTarget')
