@@ -1233,14 +1233,14 @@ function subTabClass(id) {
         :aria-pressed="subTab === t.id"
         @click="subTab = t.id"
       >
-        <span class="block whitespace-nowrap text-xs font-semibold md:text-sm">{{ t.label }}</span>
+        <span class="block whitespace-nowrap text-xs font-semibold md:text-base">{{ t.label }}</span>
         <span
-          class="block whitespace-nowrap text-[11px]"
+          class="block whitespace-nowrap text-[11px] md:text-xs"
           :class="subTab === t.id ? 'text-teal-50' : t.done ? 'text-teal-600' : 'text-slate-400'"
         >{{ t.done ? '✓ ' : '' }}{{ t.badge }}</span>
       </button>
     </nav>
-    <div class="min-w-0 space-y-4 md:flex-1">
+    <div class="gs-daily-content min-w-0 space-y-4 md:flex-1">
 
     <!-- Hydration & Drinks -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('water')">
