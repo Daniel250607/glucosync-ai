@@ -1220,14 +1220,16 @@ const qrCountdownLabel = computed(() => {
               <button
                 type="button"
                 class="shrink-0 rounded-xl bg-slate-100 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-200"
+                aria-label="前一天"
                 @click="prevDay"
-              >◀ 前一天</button>
+              >◀<span class="hidden sm:inline"> 前一天</span></button>
               <div class="min-w-0 flex-1 text-center">
+                <!-- Mobile browsers give date inputs an intrinsic min width; min-w-0 + appearance-none let it shrink. -->
                 <input
                   v-model="selectedDate"
                   type="date"
                   :max="today"
-                  class="w-full rounded-lg border border-slate-300 px-2 py-2 text-center text-base text-slate-800"
+                  class="block w-full min-w-0 appearance-none rounded-lg border border-slate-300 bg-white px-2 py-2 text-center text-base text-slate-800"
                   @change="clampSelectedDate"
                 />
                 <p class="mt-1 text-xs text-slate-500">{{ selectedDate }} ({{ selectedWeekday }})</p>
@@ -1236,8 +1238,9 @@ const qrCountdownLabel = computed(() => {
                 type="button"
                 class="shrink-0 rounded-xl bg-slate-100 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-200 disabled:opacity-40"
                 :disabled="!canGoNext"
+                aria-label="後一天"
                 @click="nextDay"
-              >後一天 ▶</button>
+              ><span class="hidden sm:inline">後一天 </span>▶</button>
             </div>
             <div
               v-if="isPastDate"
