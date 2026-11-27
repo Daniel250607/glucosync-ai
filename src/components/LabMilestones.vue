@@ -424,7 +424,7 @@ async function runEvaluation() {
           <b>飲水</b>：依體重 {{ hydrationBand.userWeight }} kg 自動計算 {{ hydrationBand.hydrationMin }}–{{ hydrationBand.hydrationMax }} cc（每公斤 30–38 cc，下限不低於 2000 cc）。
         </li>
         <li>
-          <b>運動</b>：每天餐後活動 {{ live.targets.exerciseTarget }} 分（{{ RULES.exercise.postMealSource }}）；每週中等以上有氧 {{ live.targets.aerobicWeekTarget }} 分、肌力訓練 {{ live.targets.strengthWeekTarget }} 天。依據：{{ RULES.exercise.source }}。不隨檢驗變動，可在設定頁修改。
+          <b>運動</b>：每天餐後活動合計 {{ live.targets.exerciseTarget }} 分，不用每餐都做（{{ RULES.exercise.postMealSource }}）；每週中等以上有氧 {{ live.targets.aerobicWeekTarget }} 分、肌力訓練 {{ live.targets.strengthWeekTarget }} 天。依據：{{ RULES.exercise.source }}。不隨檢驗變動，可在設定頁修改。
         </li>
       </ul>
       <div v-if="ruleResult.notices.length" class="mt-3 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert">

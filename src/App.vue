@@ -476,7 +476,7 @@ const TARGET_FIELDS = [
   { label: '身高 (cm，0＝未設定)', key: 'userHeight' },
   { label: '飲水 下限 (cc)', key: 'hydrationMin', readonly: true },
   { label: '飲水 上限 (cc)', key: 'hydrationMax', readonly: true },
-  { label: '餐後活動 (分/日)', key: 'exerciseTarget' },
+  { label: '餐後活動 一天合計 (分)', key: 'exerciseTarget' },
   { label: '有氧 中等以上 (分/週)', key: 'aerobicWeekTarget' },
   { label: '肌力訓練 (天/週)', key: 'strengthWeekTarget' },
 ]

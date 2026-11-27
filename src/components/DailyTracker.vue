@@ -1485,8 +1485,9 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         <div>
           <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
           <p class="mt-0.5 text-xs" :class="postMealReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'" data-testid="ex-post-meal">
-            餐後活動：{{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
+            餐後活動（一天合計）：{{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
           </p>
+          <p class="text-[11px] text-slate-400">不用每餐都做，建議優先放在晚餐後；也可以分在幾餐飯後。</p>
           <p class="mt-0.5 text-xs text-slate-500">
             今日：有氧 {{ todayExercise.aerobic }} 分 · 輕度 {{ todayExercise.light }} 分 · 肌力 {{ todayExercise.strengthDone ? '✓' : '—' }}
             <span v-if="exerciseKcalTotal"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
