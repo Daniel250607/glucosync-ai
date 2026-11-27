@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, labMeets, labName, labZh, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
+import { LAB_FIELDS, URINE_QUALITATIVE, WEIGHT_LIMITS, getBaselineDate, labMeets, labName, labZh, hydrationRangeFromWeight, live, recordWeight, sanitizeWeight, takesSglt2Inhibitor, updateCustom, resetCustom, weightEntries } from '../data/presets.js'
 import { averageIntake, evaluateLabs, summarizeDay } from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
 import { sanitizeLabNumber, sanitizeQualitative } from '../data/labContext.js'
@@ -44,6 +44,17 @@ const STATUS_STYLE = {
   none: 'bg-slate-100 text-slate-500',
 }
 const STATUS_TEXT = { met: '達標', unmet: '未達標', none: '—' }
+
+/** U-Sugar on an SGLT-2 inhibitor: glucose in the urine is the drug effect, so it is not judged. */
+function urineExpected(u) {
+  return u.key === 'u_sugar' && takesSglt2Inhibitor()
+}
+/** Urine dipstick status: negative = met, anything else = not met; none without a value or when not judged. */
+function urineStatus(u) {
+  const v = sanitizeQualitative(latestByField.value[u.key]?.value ?? '')
+  if (v == null || urineExpected(u)) return 'none'
+  return v === '-' ? 'met' : 'unmet'
+}
 
 function delta(field, value) {
   if (value == null || value === '' || field.baseline == null) return ''
@@ -290,9 +301,11 @@ async function runEvaluation() {
             <tr v-for="u in URINE_QUALITATIVE" :key="u.key">
               <td class="py-2 pr-2 text-slate-700">{{ u.label }}<span class="block text-xs text-slate-400">{{ labZh(u) }}</span></td>
               <td class="py-2 pr-2 text-right text-slate-600">{{ u.baseline ?? '—' }}</td>
-              <td class="py-2 pr-2 text-right text-slate-600">{{ u.key === 'u_ketones' ? '陰性' : '改善' }}</td>
+              <td class="py-2 pr-2 text-right text-slate-600">{{ urineExpected(u) ? '預期陽性（藥物作用）' : '陰性' }}</td>
               <td class="py-2 pr-2 text-right font-medium text-slate-800">{{ latestByField[u.key]?.value || '—' }}</td>
-              <td />
+              <td class="py-2 text-right">
+                <span class="rounded-full px-2 py-0.5 text-xs" :class="STATUS_STYLE[urineStatus(u)]">{{ STATUS_TEXT[urineStatus(u)] }}</span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -300,6 +313,7 @@ async function runEvaluation() {
       <p class="mt-2 text-xs text-slate-400" data-testid="lab-standard-note">
         HbA1c、空腹血糖、LDL-C、TG、UAcr 是追蹤目標；其他項目是一般成人參考值，各醫院的參考範圍可能略有不同，以檢驗單為準。
         <template v-if="LAB_FIELDS.some((f) => f.needsSex)">HDL-C、肌酸酐、尿酸的標準男女不同，請在設定頁選擇性別後才會判斷。</template>
+        <template v-if="takesSglt2Inhibitor()">用藥清單有 SGLT-2 抑制劑：這類藥物會把糖從尿液排出，尿糖陽性是預期的藥物作用，所以不判斷達標。</template>
       </p>
     </section>
 
@@ -409,7 +423,9 @@ async function runEvaluation() {
         <li>
           <b>飲水</b>：依體重 {{ hydrationBand.userWeight }} kg 自動計算 {{ hydrationBand.hydrationMin }}–{{ hydrationBand.hydrationMax }} cc（每公斤 30–38 cc，下限不低於 2000 cc）。
         </li>
-        <li><b>運動</b>：依醫囑設定（目前 {{ live.targets.exerciseTarget }} 分），不隨檢驗變動。</li>
+        <li>
+          <b>運動</b>：每天餐後活動 {{ live.targets.exerciseTarget }} 分（{{ RULES.exercise.postMealSource }}）；每週中等以上有氧 {{ live.targets.aerobicWeekTarget }} 分、肌力訓練 {{ live.targets.strengthWeekTarget }} 天。依據：{{ RULES.exercise.source }}。不隨檢驗變動，可在設定頁修改。
+        </li>
       </ul>
       <div v-if="ruleResult.notices.length" class="mt-3 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200" role="alert">
         <p class="font-semibold">⚠️ 依檢驗的提醒</p>

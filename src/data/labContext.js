@@ -4,7 +4,7 @@
 // user input, Firestore or an imported backup, so EVERY value is sanitized before it reaches a prompt:
 // numbers must be finite and inside a plausible range, urine qualitative values must be one of a
 // fixed scale, dates must be real YYYY-MM-DD dates. Free text (e.g. `note`) is never injected.
-import { getBaselineDate, LAB_FIELDS, labMeets, URINE_QUALITATIVE } from './presets.js'
+import { getBaselineDate, LAB_FIELDS, labMeets, takesSglt2Inhibitor, URINE_QUALITATIVE } from './presets.js'
 
 /** Plausible physical ranges; values outside are treated as typos and ignored. */
 const NUMERIC_LIMITS = {
@@ -144,21 +144,28 @@ export function latestLabSnapshot(labs) {
       ...(p ? numericTrend(f, value, baseline) : { delta: 0, pct: 0, trend: 'no follow-up yet' }),
     })
   }
+  // On an SGLT-2 inhibitor glucose in the urine is the drug effect: U-Sugar is neither judged nor compared.
+  const sglt2 = takesSglt2Inhibitor()
   for (const q of URINE_QUALITATIVE) {
     const p = pick(q.key)
     if (!p && q.baseline == null) continue
     const value = p ? p.value : q.baseline
+    const drugEffect = sglt2 && q.key === 'u_sugar'
     let trend = 'no follow-up yet'
     if (p && q.baseline == null) trend = 'no baseline'
+    else if (p && drugEffect) trend = 'not compared (SGLT-2 inhibitor)'
     else if (p) {
       const d = QUAL_SCALE.indexOf(value) - QUAL_SCALE.indexOf(q.baseline)
       trend = d < 0 ? 'improved' : d > 0 ? 'worsened' : 'unchanged'
     }
+    const status = value === '-' ? 'negative' : value === '±' ? 'trace' : 'positive'
     rows.push({
       key: q.key, label: q.label, zh: q.zh || '', common: q.common || '', unit: '', kind: 'qualitative',
       baseline: q.baseline, baselineDate: getBaselineDate(),
       latest: value, latestDate: p ? p.date : getBaselineDate(), source: p ? 'follow-up' : 'baseline',
-      targetLabel: 'negative (-)', status: value === '-' ? 'negative' : value === '±' ? 'trace' : 'positive', trend,
+      targetLabel: drugEffect ? 'positive expected (SGLT-2 inhibitor passes glucose into the urine)' : 'negative (-)',
+      status: drugEffect ? 'expected on SGLT-2 inhibitor' : status,
+      trend,
     })
   }
   return rows

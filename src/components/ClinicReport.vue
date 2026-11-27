@@ -6,6 +6,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getBaselineDate } from '../data/presets.js'
 import { REPORT_RANGES, buildReport } from '../data/report.js'
+import { RULES } from '../data/targetRules.js'
 
 const props = defineProps({
   days: { type: Object, required: true },
@@ -25,6 +26,20 @@ function fmt(v, unit = '') {
 }
 function pctText(c) {
   return c.pct == null ? '—（無紀錄）' : `${c.pct}%（${c.hit}/${c.total} 天）`
+}
+/** Weekly exercise rows (shared by the page and the PNG); empty when no 7-day block has records. */
+function exerciseRows(r) {
+  const e = r.exercise
+  const t = r.targets
+  if (!e || !e.weeks.length) return []
+  return [
+    { id: 'aerobic', label: '中等以上有氧', target: `≥ ${t.aerobicWeekTarget} 分/週`, value: `平均 ${fmt(e.avgAerobic)} 分/週；達標 ${e.weeksMet}/${e.weeks.length} 週` },
+    { id: 'strength', label: '肌力訓練', target: `≥ ${t.strengthWeekTarget} 天/週`, value: `平均 ${fmt(e.avgStrengthDays)} 天/週` },
+    { id: 'rest', label: '最長連續沒有有氧', target: `≤ ${RULES.exercise.maxRestDays} 天`, value: e.longestRest == null ? '—' : `${e.longestRest} 天` },
+  ]
+}
+function exerciseNote(r) {
+  return r.exercise?.unrated ? `含 ${fmt(r.exercise.unrated)} 分沒有選強度的紀錄（舊紀錄或餐點標籤），以中等計算。` : ''
 }
 function deltaText(d) {
   if (d == null) return ''
@@ -62,6 +77,11 @@ function pngRows(r) {
   for (const c of r.compliance) rows.push({ kind: 'cols', cells: [c.label, c.hint, pctText(c)] })
   rows.push({ kind: 'h', text: '每日平均（只計有紀錄的天數）' })
   for (const a of r.averages) rows.push({ kind: 'cols', cells: [a.label, a.value == null ? '—' : fmt(a.value, a.unit), `${a.days} 天`] })
+  rows.push({ kind: 'h', text: '運動（每 7 天；費力 1 分鐘算 2 分鐘）' })
+  const ex = exerciseRows(r)
+  if (!ex.length) rows.push({ kind: 'text', text: '此期間沒有完整 7 天的紀錄。' })
+  for (const e of ex) rows.push({ kind: 'cols', cells: [e.label, e.target, e.value] })
+  if (exerciseNote(r)) rows.push({ kind: 'text', text: exerciseNote(r) })
   rows.push({ kind: 'h', text: `檢驗：基準（${getBaselineDate() || '未設定'}）vs 最新` })
   rows.push({ kind: 'cols', head: true, cells: ['項目', '基準', '最新（日期）', '目標 / 狀態'] })
   for (const l of r.labRows) {
@@ -240,6 +260,22 @@ defineExpose({ pngRows: () => pngRows(report.value) })
         </section>
 
         <section class="report-block mt-4">
+          <h2 class="report-h">🏃 運動 <span class="text-xs font-normal text-slate-500">（每 7 天；費力 1 分鐘算 2 分鐘）</span></h2>
+          <p v-if="!exerciseRows(report).length" class="text-sm text-slate-500">此期間沒有完整 7 天的紀錄。</p>
+          <table v-else class="report-table" data-testid="report-exercise">
+            <thead><tr><th>項目</th><th>目標</th><th>結果</th></tr></thead>
+            <tbody>
+              <tr v-for="e in exerciseRows(report)" :key="e.id" :data-id="e.id">
+                <td>{{ e.label }}</td>
+                <td>{{ e.target }}</td>
+                <td class="tabular-nums">{{ e.value }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="exerciseNote(report)" class="mt-1 text-xs text-slate-500">{{ exerciseNote(report) }}</p>
+        </section>
+
+        <section class="report-block mt-4">
           <h2 class="report-h">🧪 檢驗：基準 vs 最新</h2>
           <table class="report-table" data-testid="report-labs">
             <thead><tr><th>項目</th><th>基準（{{ getBaselineDate() || '未設定' }}）</th><th>最新（日期）</th><th>變化</th><th>目標</th><th>狀態</th></tr></thead>
@@ -291,7 +327,7 @@ defineExpose({ pngRows: () => pngRows(report.value) })
         </section>
 
         <footer class="mt-6 border-t border-slate-200 pt-2 text-xs text-slate-500">
-          本報告由使用者自行記錄的資料彙整；營養數值為 AI 估算，僅供回診討論參考，不能取代醫師診斷。目標值為 App 目前設定：碳水 {{ report.targets.carbsMin }}–{{ report.targets.carbsMax }} g、飽和脂肪 ≤ {{ report.targets.satFatMax }} g、飲水 ≥ {{ report.targets.hydrationMin }} cc、運動 ≥ {{ report.targets.exerciseTarget }} 分。
+          本報告由使用者自行記錄的資料彙整；營養數值為 AI 估算，僅供回診討論參考，不能取代醫師診斷。目標值為 App 目前設定：碳水 {{ report.targets.carbsMin }}–{{ report.targets.carbsMax }} g、飽和脂肪 ≤ {{ report.targets.satFatMax }} g、飲水 ≥ {{ report.targets.hydrationMin }} cc、餐後活動 ≥ {{ report.targets.exerciseTarget }} 分/日、中等以上有氧 ≥ {{ report.targets.aerobicWeekTarget }} 分/週、肌力訓練 ≥ {{ report.targets.strengthWeekTarget }} 天/週。運動強度為使用者以講話測試自評。
         </footer>
       </article>
     </div>

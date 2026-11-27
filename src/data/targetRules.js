@@ -32,6 +32,20 @@ export const RULES = {
     met: { warnPct: 7, maxPct: 10 },
     source: '血脂指引：LDL-C 未達標時飽和脂肪 < 7% 熱量；一般與糖尿病指引 < 10% 熱量',
   },
+  exercise: {
+    // ADA Standards of Care (physical activity): >= 150 min/week of moderate-to-vigorous aerobic activity
+    // over >= 3 days with no more than 2 consecutive days off; 2-3 strength sessions/week on non-consecutive
+    // days; one vigorous minute counts as about two moderate minutes.
+    aerobicWeekMin: 150,
+    aerobicMinDays: 3,
+    maxRestDays: 2,
+    strengthDaysPerWeek: 2,
+    // Daily post-meal activity (any intensity) blunts the post-meal glucose rise; dinner is the priority.
+    postMealMin: 15,
+    postMealWindowMin: 120,
+    source: 'ADA 糖尿病照護標準：每週 ≥ 150 分鐘中等以上強度有氧，分散在至少 3 天、不連續 2 天以上不運動；每週 2–3 次肌力訓練（不排連續兩天）；費力 1 分鐘約等於中等 2 分鐘',
+    postMealSource: '餐後活動（輕鬆也可以）能降低餐後血糖高峰，優先放在晚餐後',
+  },
   // Reminder-only thresholds (the app does not track these nutrients, so no target changes).
   tgLimit: 150,
   uacrLimit: 30,
@@ -60,7 +74,7 @@ export function estimateEnergy(weightKg, heightCm, rules = RULES) {
 /**
  * Targets from fixed rules. `snapshot` is latestLabSnapshot() output (latest value per lab field).
  * Returns { targets: { carbsMin, carbsMax, satFatMin, satFatMax }, energy, reasons: [{ key, label, text }], notices: [string] }.
- * Hydration (weight-based) and exercise (physician's instruction) are not lab-driven and stay as configured.
+ * Hydration (weight-based) and exercise (RULES.exercise, see exercise.js) are not lab-driven and stay as configured.
  */
 export function computeRuleTargets({ snapshot = [], weight, height }, rules = RULES) {
   const row = (key) => snapshot.find((r) => r.key === key) || null

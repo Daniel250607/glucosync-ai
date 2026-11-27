@@ -5,6 +5,7 @@
 // only through Vue text interpolation or canvas fillText (never as HTML).
 import { labZh, live } from './presets.js'
 import { latestLabSnapshot } from './labContext.js'
+import { exerciseDay, exerciseWeek, longestRestRun } from './exercise.js'
 import { sanitizeSick, sickLabels } from './sickDay.js'
 import { summarizeDay } from '../services/gemini.js'
 
@@ -15,6 +16,7 @@ export const REPORT_RANGES = [14, 30, 90]
  * - macro: only days with >= 1 AI-analyzed meal
  * - water: hydration_cc > 0 or any drink logged
  * - exercise: any exercise log or legacy exercise_min > 0
+ * `ex` holds the exercise totals by category (exerciseDay in exercise.js).
  * Shared by TrendChart (charts / scorecards) and the clinic report so both count days the same way.
  */
 export function dayFlags(raw) {
@@ -22,8 +24,8 @@ export function dayFlags(raw) {
   const s = summarizeDay(day)
   const mealsAnalyzed = (day.meals || []).filter((m) => m && m.analysis).length
   const hasWater = s.hydration_cc > 0 || (day.drinks || []).some((d) => d && d.name)
-  const hasExerciseLog = (day.exercise_logs || []).length > 0 || Number(day.exercise_min) > 0
-  return { ...s, meals_analyzed: mealsAnalyzed, has_water: hasWater, has_exercise: hasExerciseLog, raw: day }
+  const ex = exerciseDay(day)
+  return { ...s, meals_analyzed: mealsAnalyzed, has_water: hasWater, has_exercise: ex.has, ex, raw: day }
 }
 
 /** Compliance over days where the metric was logged (`has`); no-data days count as neither pass nor fail. */
@@ -41,8 +43,34 @@ export function complianceDefs(t = live.targets) {
     { id: 'carbs', label: '碳水安全', hint: `${t.carbsMin}–${t.carbsMax} g`, has: (d) => d.meals_analyzed > 0, test: (d) => d.carbs_g >= t.carbsMin && d.carbs_g <= t.carbsMax },
     { id: 'sat', label: '飽和脂肪', hint: `≤ ${t.satFatMax} g`, has: (d) => d.meals_analyzed > 0, test: (d) => d.saturated_fat_g <= t.satFatMax },
     { id: 'water', label: '飲水', hint: `≥ ${t.hydrationMin} cc`, has: (d) => d.has_water, test: (d) => d.hydration_cc >= t.hydrationMin },
-    { id: 'ex', label: '運動', hint: `≥ ${t.exerciseTarget} 分`, has: (d) => d.has_exercise, test: (d) => d.exercise_min >= t.exerciseTarget },
+    { id: 'ex', label: '餐後活動', hint: `≥ ${t.exerciseTarget} 分`, has: (d) => d.has_exercise, test: (d) => d.ex.postMeal >= t.exerciseTarget },
   ]
+}
+
+/**
+ * Weekly exercise over a report window: consecutive 7-day blocks ending at the last key (the oldest
+ * partial block is left out; blocks without any record are skipped). Rest-day runs are counted from
+ * the first recorded day, so days before the app was used are not counted as rest.
+ */
+export function exerciseReport(map, keys, t = live.targets) {
+  const weeks = []
+  for (let end = keys.length - 1; end - 6 >= 0; end -= 7) {
+    const wk = keys.slice(end - 6, end + 1)
+    if (!wk.some((k) => hasAnyRecord(map[k]))) continue
+    const w = exerciseWeek(map, wk[6])
+    weeks.push({ start: wk[0], end: wk[6], ...w, met: w.aerobic >= t.aerobicWeekTarget })
+  }
+  weeks.reverse()
+  const avg = (key) => (weeks.length ? round1(weeks.reduce((a, w) => a + w[key], 0) / weeks.length) : null)
+  const first = keys.findIndex((k) => hasAnyRecord(map[k]))
+  return {
+    weeks,
+    weeksMet: weeks.filter((w) => w.met).length,
+    avgAerobic: avg('aerobic'),
+    avgStrengthDays: avg('strengthDays'),
+    longestRest: first < 0 ? null : longestRestRun(map, keys.slice(first)),
+    unrated: round1(weeks.reduce((a, w) => a + w.unrated, 0)),
+  }
 }
 
 function localKey(d) {
@@ -127,6 +155,7 @@ const STATUS_ZH = {
   'below target (not met)': '未達標',
   'no target': '—',
   'no target (sex not set)': '—（未設定性別）',
+  'expected on SGLT-2 inhibitor': '不判斷（藥物作用）',
   'in range': '範圍內',
   negative: '陰性',
   trace: '微量',
@@ -140,6 +169,12 @@ const TREND_ZH = {
   lower: '下降',
   'no follow-up yet': '尚無追蹤',
   'no baseline': '無基準值',
+  'not compared (SGLT-2 inhibitor)': '不比較（藥物作用）',
+}
+/** Chinese target text for a snapshot row (urine rows carry an English target for the AI prompt). */
+function labTargetZh(r) {
+  if (r.kind !== 'qualitative') return r.targetLabel || '—'
+  return r.status === 'expected on SGLT-2 inhibitor' ? '預期陽性（SGLT-2 抑制劑作用）' : '陰性 (-)'
 }
 export function labStatusZh(s) {
   if (typeof s === 'string' && s.startsWith('out of range')) return '超出範圍'
@@ -173,7 +208,7 @@ export function buildReport({ days, labs, rangeDays = 30, now = new Date() }) {
     { id: 'sodium', label: '鈉', unit: 'mg/日', ...avgOver(macroDays, 'sodium_mg', 0), basis: '有已分析餐點的天數' },
     { id: 'kcal', label: '熱量', unit: 'kcal/日', ...avgOver(macroDays, 'kcal', 0), basis: '有已分析餐點的天數' },
     { id: 'water', label: '飲水', unit: 'cc/日', ...avgOver(waterDays, 'hydration_cc', 0), basis: '有飲水紀錄的天數' },
-    { id: 'ex', label: '運動', unit: '分/日', ...avgOver(exDays, 'exercise_min'), basis: '有運動紀錄的天數' },
+    { id: 'ex', label: '活動時間（所有類別）', unit: '分/日', ...avgOver(exDays.map((d) => ({ total: d.ex.total })), 'total'), basis: '有運動紀錄的天數' },
   ]
 
   const sickEntries = records
@@ -190,7 +225,7 @@ export function buildReport({ days, labs, rangeDays = 30, now = new Date() }) {
     baselineDate: r.baselineDate,
     latest: r.source === 'follow-up' ? r.latest : null,
     latestDate: r.source === 'follow-up' ? r.latestDate : null,
-    target: r.targetLabel || '—',
+    target: labTargetZh(r),
     // Without a follow-up the status describes the baseline value; label it so it is not read as current.
     status: r.source === 'follow-up' || labStatusZh(r.status).startsWith('—') ? labStatusZh(r.status) : `${labStatusZh(r.status)}（基準）`,
     trend: labTrendZh(r.trend),
@@ -206,6 +241,7 @@ export function buildReport({ days, labs, rangeDays = 30, now = new Date() }) {
     targets: t,
     compliance: complianceRows,
     averages,
+    exercise: exerciseReport(map, keys, t),
     labRows,
     sickEntries,
     meds: medAdherence(records),

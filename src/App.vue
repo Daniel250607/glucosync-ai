@@ -476,7 +476,9 @@ const TARGET_FIELDS = [
   { label: '身高 (cm，0＝未設定)', key: 'userHeight' },
   { label: '飲水 下限 (cc)', key: 'hydrationMin', readonly: true },
   { label: '飲水 上限 (cc)', key: 'hydrationMax', readonly: true },
-  { label: '運動目標 (分)', key: 'exerciseTarget' },
+  { label: '餐後活動 (分/日)', key: 'exerciseTarget' },
+  { label: '有氧 中等以上 (分/週)', key: 'aerobicWeekTarget' },
+  { label: '肌力訓練 (天/週)', key: 'strengthWeekTarget' },
 ]
 
 watch(
@@ -1259,7 +1261,7 @@ const qrCountdownLabel = computed(() => {
               >🗑️ 刪除這天的紀錄</button>
             </div>
           </section>
-          <DailyTracker :day="currentDay" :labs="labs" @update="updateDay" @open-settings="openSettings" />
+          <DailyTracker :day="currentDay" :days="days" :labs="labs" @update="updateDay" @open-settings="openSettings" />
         </div>
         <TrendChart v-show="tab === 'trend'" :days="days" />
         <LabMilestones
@@ -1562,7 +1564,7 @@ const qrCountdownLabel = computed(() => {
             </select>
           </label>
         </div>
-        <p class="mt-1 text-xs text-slate-400">預設：碳水 130-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、運動 20 分。碳水與飽和脂肪可在「檢驗」頁依檢驗規則一鍵套用。</p>
+        <p class="mt-1 text-xs text-slate-400">預設：碳水 130-180g、飽和脂肪 15-20g、飲水依體重（70 kg → 2100-2660cc，下限不低於 2000cc）、餐後活動每天 20 分、中等以上有氧每週 150 分、肌力訓練每週 2 天。碳水與飽和脂肪可在「檢驗」頁依檢驗規則一鍵套用。</p>
         <p class="mt-1 text-xs text-slate-500" data-testid="settings-weight-range">
           <template v-if="draftWeightRange">
             依身高 {{ draft.targets.userHeight }} cm：標準體重範圍 {{ draftWeightRange.min }}–{{ draftWeightRange.max }} kg（BMI 18.5–24），理想體重 {{ draftWeightRange.ideal }} kg。

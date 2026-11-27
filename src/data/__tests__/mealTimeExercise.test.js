@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { eatenBefore, isClockTime, sortMealsByTime } from '../mealTime.js'
-import { applyCustomConfig, equivalentMinutes, exerciseFactor, exerciseKcal, exerciseProfile, guessExerciseMode, live, repsToMinutes } from '../presets.js'
-import { clampExerciseFactor, normalizeExerciseProfile, summarizeDay } from '../../services/gemini.js'
+import { applyCustomConfig, estimateMet, exerciseKcal, exerciseProfile, guessExerciseCategory, guessExerciseMode, live, repsToMinutes } from '../presets.js'
+import { normalizeExerciseProfile, summarizeDay } from '../../services/gemini.js'
 
 afterEach(() => applyCustomConfig({}))
 
@@ -42,33 +42,34 @@ describe('summarizeDay with beforeTime', () => {
   })
 })
 
-describe('exercise equivalence factors', () => {
-  it('defaults: unknown types are 1, squats above 1', () => {
-    expect(exerciseFactor('戶外散步')).toBe(1)
-    expect(exerciseFactor('深蹲')).toBeGreaterThan(1)
-    expect(exerciseFactor('抬腳跟')).toBeLessThan(1)
+describe('exercise categories', () => {
+  it('guesses strength moves, light chores and aerobic for the rest', () => {
+    expect(guessExerciseCategory('深蹲')).toBe('strength')
+    expect(guessExerciseCategory('抬腳跟')).toBe('strength')
+    expect(guessExerciseCategory('重訓/肌力')).toBe('strength')
+    expect(guessExerciseCategory('伸展')).toBe('light')
+    expect(guessExerciseCategory('買東西走路')).toBe('light')
+    expect(guessExerciseCategory('戶外散步')).toBe('aerobic') // intensity decides at logging time
+    expect(guessExerciseCategory('開合跳')).toBe('aerobic')
+    expect(guessExerciseCategory('餐後踏步')).toBe('aerobic')
   })
-  it('user factors override defaults and are sanitized', () => {
-    applyCustomConfig({ exerciseFactors: { 深蹲: 2, 騎車: 99, 游泳: 'x', __proto__: 3 } })
-    expect(exerciseFactor('深蹲')).toBe(2)
-    expect(exerciseFactor('騎車')).toBe(1) // out of range, dropped
-    expect(exerciseFactor('游泳')).toBe(1)
-    expect(live.exerciseFactors['抬腳跟']).toBeDefined() // defaults remain
+  it('saved category overrides the guess; invalid ones are dropped', () => {
+    applyCustomConfig({ exerciseProfiles: { 開合跳: { category: 'strength' }, 散步: { category: 'bogus' } } })
+    expect(exerciseProfile('開合跳').category).toBe('strength')
+    expect(exerciseProfile('散步').category).toBe('aerobic')
   })
-  it('equivalentMinutes rounds and never drops below 1', () => {
-    expect(equivalentMinutes(10, 1.5)).toBe(15)
-    expect(equivalentMinutes(1, 0.7)).toBe(1)
-    expect(equivalentMinutes(0, 2)).toBe(1)
+  it('old walking-equivalent factors are still accepted from storage but not used', () => {
+    applyCustomConfig({ exerciseFactors: { 深蹲: 2, 騎車: 99 } })
+    expect(live.exerciseFactors).toEqual({ 深蹲: 2 })
+    expect(exerciseProfile('深蹲')).not.toHaveProperty('factor')
   })
-})
-
-describe('clampExerciseFactor', () => {
-  it('clamps into 0.1-5, rounds to 2 decimals and rejects junk', () => {
-    expect(clampExerciseFactor(1.234)).toBe(1.23)
-    expect(clampExerciseFactor(99)).toBe(5)
-    expect(clampExerciseFactor(-3)).toBe(0.1)
-    expect(clampExerciseFactor('x')).toBeNull()
-    expect(clampExerciseFactor(undefined)).toBeNull()
+  it('estimates MET from category and intensity', () => {
+    expect(estimateMet('aerobic', 'light')).toBe(2.5)
+    expect(estimateMet('aerobic', 'moderate')).toBe(4)
+    expect(estimateMet('aerobic', 'vigorous')).toBe(7)
+    expect(estimateMet('aerobic', undefined)).toBe(3.5)
+    expect(estimateMet('strength', 'vigorous')).toBe(5)
+    expect(estimateMet('light')).toBe(2.5)
   })
 })
 
@@ -81,9 +82,9 @@ describe('exercise profiles', () => {
     expect(guessExerciseMode('抬腿走路')).toBe('duration')
     expect(guessExerciseMode('騎車')).toBe('duration')
   })
-  it('fills fallbacks: pace 20, MET from factor', () => {
+  it('fills fallbacks: pace 20, no explicit MET', () => {
     const p = exerciseProfile('坐著，抬腿')
-    expect(p).toMatchObject({ mode: 'reps', repsPerMin: 20, factor: 1, met: 3.5, metEstimated: true })
+    expect(p).toMatchObject({ mode: 'reps', repsPerMin: 20, met: null, metEstimated: true })
   })
   it('saved profile overrides guess and is sanitized', () => {
     applyCustomConfig({ exerciseProfiles: { 原地踏步: { mode: 'reps', repsPerMin: 999, met: 4 }, x: { mode: 'bad' } } })
@@ -105,14 +106,16 @@ describe('exercise profiles', () => {
 })
 
 describe('normalizeExerciseProfile', () => {
-  it('clamps AI values and rejects missing factor / met', () => {
-    expect(normalizeExerciseProfile({ mode: 'reps', reps_per_min: 500, factor: 9, met: 0.2, reason: 'r' }))
-      .toEqual({ mode: 'reps', repsPerMin: 200, factor: 5, met: 1, reason: 'r' })
-    expect(normalizeExerciseProfile({ mode: 'x', reps_per_min: 0, factor: 1, met: 3.5 }).mode).toBe('duration')
+  it('clamps AI values and rejects a missing category / met', () => {
+    expect(normalizeExerciseProfile({ mode: 'reps', category: 'strength', reps_per_min: 500, met: 0.2, reason: 'r' }))
+      .toEqual({ mode: 'reps', category: 'strength', repsPerMin: 200, met: 1, reason: 'r' })
+    const ok = { category: 'aerobic', met: 3.5 }
+    expect(normalizeExerciseProfile({ ...ok, mode: 'x', reps_per_min: 0 }).mode).toBe('duration')
     // 0 (duration activity) or junk -> default pace, never 1 rep/min (which would inflate reps-mode minutes)
-    expect(normalizeExerciseProfile({ mode: 'duration', reps_per_min: 0, factor: 1, met: 3.5 }).repsPerMin).toBe(20)
-    expect(normalizeExerciseProfile({ mode: 'reps', reps_per_min: 'x', factor: 1, met: 3.5 }).repsPerMin).toBe(20)
-    expect(normalizeExerciseProfile({ mode: 'reps', reps_per_min: 0.4, factor: 1, met: 3.5 }).repsPerMin).toBe(20)
-    expect(() => normalizeExerciseProfile({ factor: 'x', met: 3 })).toThrow()
+    expect(normalizeExerciseProfile({ ...ok, mode: 'duration', reps_per_min: 0 }).repsPerMin).toBe(20)
+    expect(normalizeExerciseProfile({ ...ok, mode: 'reps', reps_per_min: 'x' }).repsPerMin).toBe(20)
+    expect(normalizeExerciseProfile({ ...ok, mode: 'reps', reps_per_min: 0.4 }).repsPerMin).toBe(20)
+    expect(() => normalizeExerciseProfile({ category: 'aerobic', met: 'x' })).toThrow()
+    expect(() => normalizeExerciseProfile({ category: 'cardio', met: 3 })).toThrow()
   })
 })

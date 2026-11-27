@@ -13,8 +13,9 @@ import {
   Tooltip,
   Filler,
 } from 'chart.js'
-import { live } from '../data/presets.js'
+import { INTENSITIES, EXERCISE_CATEGORIES, live } from '../data/presets.js'
 import { compliance, complianceDefs, dayFlags, windowKeys } from '../data/report.js'
+import { exerciseWeek, isPostMealLog, logCredit } from '../data/exercise.js'
 
 Chart.register(
   BarController,
@@ -58,8 +59,11 @@ const COLORS = {
   carbsOk: 'rgba(251,146,60,0.85)', // orange: inside carbsMin–carbsMax
   carbsHigh: 'rgba(244,63,94,0.8)', // red: > carbsMax
   carbsLow: 'rgba(234,179,8,0.9)', // yellow: < carbsMin (ketoacidosis risk on an SGLT-2 inhibitor)
-  exMet: '#0d9488', // dark teal: goal met
-  exUnmet: 'rgba(13,148,136,0.4)', // light teal: goal not met
+  exAerobic: '#0d9488', // dark teal: moderate-or-higher aerobic (moderate-equivalent minutes)
+  exUnrated: 'rgba(100,116,139,0.55)', // slate: aerobic without an intensity rating (old logs), counted as moderate
+  exLight: 'rgba(13,148,136,0.3)', // light teal: light activity
+  exStrength: 'rgba(99,102,241,0.75)', // indigo: strength training
+  exWeek: '#b45309', // amber line: rolling 7-day aerobic total
 }
 
 // Per-chart "has data" flags for empty-data notes.
@@ -92,11 +96,8 @@ function waterStatus(d, t) {
   if (d.hydration_cc > t.hydrationMax) return '高於上限'
   return '安全區內'
 }
-function exStatus(d, t) {
-  if (!d.has_exercise) return '未記錄'
-  const m = d.exercise_min || 0
-  return m >= t.exerciseTarget ? '達標' : `未達標（差 ${t.exerciseTarget - m} 分）`
-}
+/** Rolling 7-day exercise totals ending at each charted day (days before the window are included). */
+const weekSeries = computed(() => series.value.map((d) => exerciseWeek(props.days, d.date)))
 
 const scorecards = computed(() => {
   const curr = series.value
@@ -133,25 +134,21 @@ function scrollToChart(id) {
   if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-const EX_SOURCE = { meal_tag: '（餐點標籤連動）' }
-function exerciseExtras(day) {
+const CATEGORY_LABEL = Object.fromEntries(EXERCISE_CATEGORIES.map((c) => [c.value, c.label]))
+const INTENSITY_LABEL = Object.fromEntries(INTENSITIES.map((i) => [i.value, i.label]))
+function exerciseExtras(day, index) {
   const lines = []
   const rawLogs = day.raw?.exercise_logs || day.exercise_logs || []
   const logs = rawLogs.filter((e) => e && (e.type || Number(e.duration_min) || Number(e.reps)))
-  if (logs.length) {
-    lines.push(
-      `🏃 ${logs.map((e) => {
-        const reps = Number(e.reps) || 0
-        if (e.mode === 'reps' || reps > 0) {
-          const sets = Number(e.sets) || 1
-          return `${e.type || '運動'} ${reps}下(${sets}組) ${Number(e.duration_min) || 0}m${EX_SOURCE[e.source] || ''}`
-        }
-        return `${e.type || '運動'} ${Number(e.duration_min) || 0}m${EX_SOURCE[e.source] || ''}${e.time ? ` @${e.time}` : ''}`
-      }).join(', ')}`,
-    )
-  } else if (day.exercise_min > 0) {
-    lines.push(`🏃 運動 ${day.exercise_min}m（舊版 exercise_min 欄位，無明細）`)
+  for (const e of logs) {
+    const reps = Number(e.reps) || 0
+    const amount = e.mode === 'reps' || reps > 0 ? `${reps}下×${Number(e.sets) || 1}組 約${logCredit(e).actual}分` : `${logCredit(e).actual}分`
+    const kind = e.category ? `${CATEGORY_LABEL[e.category] || ''}${e.intensity ? `·${INTENSITY_LABEL[e.intensity] || ''}` : ''}` : '未分類'
+    lines.push(`🏃 ${e.time ? `${e.time} ` : ''}${e.type || '運動'} ${amount}（${kind}${isPostMealLog(e) ? '·餐後' : ''}）`)
   }
+  if (!logs.length && day.exercise_min > 0) lines.push(`🏃 運動 ${day.exercise_min}m（舊版 exercise_min 欄位，無明細）`)
+  const w = weekSeries.value[index]
+  if (w) lines.push(`近 7 天有氧 ${fmtNum(w.aerobic)} / ${live.targets.aerobicWeekTarget} 分 · 肌力 ${w.strengthDays} 天`)
   return lines
 }
 
@@ -161,10 +158,10 @@ function drinkExtras(day) {
 }
 
 /** Tooltip extra lines. kind: 'exercise' | 'drinks' | undefined (both). */
-function tooltipExtras(day, kind) {
+function tooltipExtras(day, kind, index) {
   if (!day) return []
   const lines = []
-  if (!kind || kind === 'exercise') lines.push(...exerciseExtras(day))
+  if (!kind || kind === 'exercise') lines.push(...exerciseExtras(day, index))
   if (!kind || kind === 'drinks') lines.push(...drinkExtras(day))
   return lines
 }
@@ -328,36 +325,45 @@ function buildWaterData() {
   }
 }
 
-// ---------- Chart 3: exercise minutes + goal line ----------
+// ---------- Chart 3: daily minutes by category (stacked) + rolling 7-day aerobic total ----------
 function buildExerciseData() {
   const TARGETS = live.targets
   const s = series.value
+  // null = not logged (no bar); 0 parts of a logged day are drawn as nothing.
+  const part = (key) => s.map((d) => (d.has_exercise ? d.ex[key] : null))
+  const bar = (label, data, color) => ({
+    type: 'bar', label, tipName: label, unit: '分', data, yAxisID: 'yEx', stack: 'ex',
+    backgroundColor: color, borderRadius: 2, order: 2,
+  })
+  const aerobicRated = s.map((d) => (d.has_exercise ? Math.round((d.ex.aerobic - d.ex.unrated) * 10) / 10 : null))
   return {
     labels: labels(),
     datasets: [
+      bar('有氧（中等以上）', aerobicRated, COLORS.exAerobic),
+      bar('有氧（未分強度）', part('unrated'), COLORS.exUnrated),
+      bar('輕度活動', part('light'), COLORS.exLight),
+      bar('肌力', part('strength'), COLORS.exStrength),
       {
-        type: 'bar',
-        label: '運動 (分)',
-        tipName: '運動',
+        type: 'line',
+        label: '近 7 天有氧累計 (分)',
+        tipName: '近 7 天有氧',
         unit: '分',
-        tipStatus: s.map((d) => exStatus(d, TARGETS)),
-        data: s.map((d) => (d.has_exercise ? d.exercise_min || 0 : null)),
-        yAxisID: 'yEx',
-        backgroundColor: s.map((d) => ((d.exercise_min || 0) >= TARGETS.exerciseTarget ? COLORS.exMet : COLORS.exUnmet)),
-        legendItems: [
-          { text: `運動 (達標 ≥ ${TARGETS.exerciseTarget} 分)`, color: COLORS.exMet },
-          { text: `運動 (未達標 < ${TARGETS.exerciseTarget} 分)`, color: COLORS.exUnmet },
-        ],
-        borderRadius: 4,
-        order: 2,
+        data: weekSeries.value.map((w) => w.aerobic),
+        yAxisID: 'yWeek',
+        borderColor: COLORS.exWeek,
+        backgroundColor: COLORS.exWeek,
+        tension: 0.25,
+        pointRadius: 3,
+        borderWidth: 2,
+        order: 1,
       },
       {
         type: 'line',
-        label: `運動目標 ${TARGETS.exerciseTarget} 分`,
+        label: `每週有氧目標 ${TARGETS.aerobicWeekTarget} 分（右軸）`,
         isThreshold: true,
-        data: flat(TARGETS.exerciseTarget),
-        yAxisID: 'yEx',
-        borderColor: 'rgba(15,118,110,0.9)',
+        data: flat(TARGETS.aerobicWeekTarget),
+        yAxisID: 'yWeek',
+        borderColor: 'rgba(180,83,9,0.6)',
         borderDash: [6, 4],
         borderWidth: 1.5,
         pointRadius: 0,
@@ -409,7 +415,7 @@ function baseOptions(extraKind, scales) {
           afterBody(items) {
             if (!extraKind) return []
             const index = items && items[0] ? items[0].dataIndex : -1
-            return tooltipExtras(series.value[index], extraKind)
+            return tooltipExtras(series.value[index], extraKind, index)
           },
         },
       },
@@ -451,15 +457,29 @@ function buildWaterOptions() {
 }
 
 function buildExerciseOptions() {
-  return baseOptions('exercise', {
+  const opts = baseOptions('exercise', {
     yEx: {
       type: 'linear',
       position: 'left',
       beginAtZero: true,
+      stacked: true,
       suggestedMax: 60,
-      title: { display: true, text: '運動 (分鐘)' },
+      title: { display: true, text: '每日 (分鐘)' },
+    },
+    yWeek: {
+      type: 'linear',
+      position: 'right',
+      beginAtZero: true,
+      suggestedMax: Math.max(200, Number(live.targets.aerobicWeekTarget) + 50),
+      grid: { drawOnChartArea: false },
+      title: { display: true, text: '近 7 天有氧 (分鐘)' },
     },
   })
+  opts.scales.x.stacked = true
+  // Hide the empty category parts of a day in the tooltip (a day with only walking shows one bar line).
+  const filter = opts.plugins.tooltip.filter
+  opts.plugins.tooltip.filter = (item) => filter(item) && !(item.dataset.stack === 'ex' && !item.raw)
+  return opts
 }
 
 function destroyCharts() {
@@ -564,7 +584,7 @@ onBeforeUnmount(() => {
         <div class="mt-2 h-72 sm:h-72"><canvas ref="waterCanvas" role="img" aria-label="飲水趨勢圖" /></div>
       </div>
       <div ref="exerciseSection" class="mt-5 scroll-mt-24 sm:scroll-mt-32" data-chart="exercise">
-        <h3 class="text-sm font-medium text-slate-700">🏃 運動 <span class="text-xs font-normal text-slate-400">(分鐘/日)</span></h3>
+        <h3 class="text-sm font-medium text-slate-700">🏃 運動 <span class="text-xs font-normal text-slate-400">(分鐘/日，依類別；折線為近 7 天有氧累計)</span></h3>
         <p v-if="!hasExerciseData" class="mt-1 text-xs text-slate-400">此期間尚無運動紀錄。</p>
         <div class="mt-2 h-72 sm:h-72"><canvas ref="exerciseCanvas" role="img" aria-label="運動趨勢圖" /></div>
       </div>
@@ -579,8 +599,12 @@ onBeforeUnmount(() => {
       <p>🟣 飽和脂肪紫線（右軸）：淡紫虛線＝建議 ≤ {{ live.targets.satFatMin }} g、紅虛線＝上限 {{ live.targets.satFatMax }} g。</p>
       <p>💧 飲水：藍色面積＝當日飲水量；淺藍帶＝安全區 {{ live.targets.hydrationMin }}–{{ live.targets.hydrationMax }} cc（依體重 {{ live.targets.userWeight }} kg，下限不低於 2000 cc）。</p>
       <p>
-        🏃 運動長條（當日累計分鐘）：<span class="legend-dot" :style="{ background: COLORS.exMet }"></span>深綠＝達標 ≥ {{ live.targets.exerciseTarget }} 分、
-        <span class="legend-dot" :style="{ background: COLORS.exUnmet }"></span>淺綠＝未達標。
+        🏃 運動長條（當日分鐘，依類別堆疊）：<span class="legend-dot" :style="{ background: COLORS.exAerobic }"></span>深綠＝中等以上有氧（費力 1 分鐘算 2 分鐘）、
+        <span class="legend-dot" :style="{ background: COLORS.exUnrated }"></span>灰＝沒有選強度的有氧（舊紀錄，以中等計算）、
+        <span class="legend-dot" :style="{ background: COLORS.exLight }"></span>淺綠＝輕度活動、
+        <span class="legend-dot" :style="{ background: COLORS.exStrength }"></span>紫＝肌力。
+        <span class="legend-dot" :style="{ background: COLORS.exWeek }"></span>橘線（右軸）＝往回 7 天的有氧累計，虛線＝每週目標 {{ live.targets.aerobicWeekTarget }} 分。
+        「餐後活動」達成率看每天飯後 2 小時內的活動是否 ≥ {{ live.targets.exerciseTarget }} 分（任何強度都算）。
       </p>
       <p>達成率只計算「有記錄該項目」的天數；徽章 ▲/▼＝與前一段 {{ range }} 天相比的變化（百分點）。點圖例可隱藏/顯示該資料。</p>
     </div>

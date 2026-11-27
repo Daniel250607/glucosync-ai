@@ -12,8 +12,11 @@ export const TARGETS = {
   userSex: 0,
   hydrationMin: 2100,
   hydrationMax: 2660,
-  // Post-dinner marching-in-place target duration (min).
+  // Daily post-meal activity (min, any intensity; best after dinner). See RULES.exercise in targetRules.js.
   exerciseTarget: 20,
+  // Weekly moderate-or-higher aerobic minutes (vigorous counts double) and strength-training days.
+  aerobicWeekTarget: 150,
+  strengthWeekTarget: 2,
   // Saturated fat warning / strict limit (g/day) for LDL-C control.
   satFatMin: 15,
   satFatMax: 20,
@@ -121,26 +124,44 @@ export const EXERCISE_TYPES = [
   '深蹲',
 ]
 
-// Walking-equivalent factor per exercise type (1 = same effect per minute as walking / marching).
-// Provisional defaults: the user adjusts them in the exercise type editor. Minutes counted toward the
-// daily target = actual minutes x factor.
-export const EXERCISE_FACTORS = {
-  '抬腳跟': 0.7,
-  '深蹲': 1.5,
-}
-
 // How each exercise type is logged and estimated. Any field may be missing:
 // - mode: 'reps' | 'duration' (missing -> guessed from the name, see guessExerciseMode)
+// - category: 'aerobic' | 'strength' | 'light' (missing -> guessed from the name, see guessExerciseCategory)
 // - repsPerMin: typical pace used to turn reps x sets into minutes (missing -> DEFAULT_REPS_PER_MIN)
-// - met: intensity in METs for the calorie estimate (missing -> WALKING_MET x factor)
+// - met: intensity in METs for the calorie estimate (missing -> estimateMet(category, intensity))
 // AI suggests these per type; the user confirms or edits them in the exercise type editor.
 export const EXERCISE_PROFILES = {
-  '抬腳跟': { mode: 'reps', repsPerMin: 30 },
-  '深蹲': { mode: 'reps', repsPerMin: 20 },
+  '抬腳跟': { mode: 'reps', repsPerMin: 30, category: 'strength' },
+  '深蹲': { mode: 'reps', repsPerMin: 20, category: 'strength' },
+  '重訓/肌力': { category: 'strength' },
 }
 export const DEFAULT_REPS_PER_MIN = 20
-/** Approximate MET of ordinary walking; factor 1 means "same as walking". */
-export const WALKING_MET = 3.5
+
+// Exercise categories (ADA Standards of Care, physical activity):
+// - aerobic: counts toward the weekly aerobic minutes when the intensity is moderate or vigorous
+// - strength: counts as a strength-training day
+// - light: recorded only (still useful after meals and to break up sitting)
+export const EXERCISE_CATEGORIES = [
+  { value: 'aerobic', label: '有氧', hint: '走路、踏步、騎車、開合跳：依強度計入每週有氧' },
+  { value: 'strength', label: '肌力', hint: '深蹲、抬腳跟、重訓：計入每週肌力天數' },
+  { value: 'light', label: '輕度活動', hint: '伸展、家事、逛街：只記錄，不計入有氧' },
+]
+// Intensity by the talk test. `weight` = aerobic minutes credited per actual minute
+// (light 0: recorded as light activity; vigorous 2: one vigorous minute ~ two moderate minutes).
+export const INTENSITIES = [
+  { value: 'light', label: '輕鬆', hint: '呼吸跟平常差不多，可以邊動邊唱歌', weight: 0, met: 2.5 },
+  { value: 'moderate', label: '中等', hint: '呼吸變快變深，能講完整句子但唱不了歌', weight: 1, met: 4 },
+  { value: 'vigorous', label: '費力', hint: '講話只能一次講幾個字，要停下來換氣', weight: 2, met: 7 },
+]
+const CATEGORY_VALUES = EXERCISE_CATEGORIES.map((c) => c.value)
+export const INTENSITY_VALUES = INTENSITIES.map((i) => i.value)
+
+/** Rough MET for the calorie estimate when the type has no explicit MET. */
+export function estimateMet(category, intensity) {
+  if (category === 'strength') return 5
+  if (category === 'light') return 2.5
+  return INTENSITIES.find((i) => i.value === intensity)?.met ?? 3.5
+}
 
 export const DRINK_PRESETS = [
   { id: 'drk-green-tea', name: '無糖綠茶/烏龍茶', default_cc: 500, counts_as_water: true },
@@ -282,6 +303,7 @@ export function getBaselineDate() {
 // that all components read from.
 // =====================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o))
+// `exerciseFactors` (old walking-equivalent factors) is no longer used but kept so stored / synced configs stay valid.
 const SECTIONS = ['presets', 'tags', 'exerciseTypes', 'exerciseFactors', 'exerciseProfiles', 'drinkPresets', 'medications', 'targets', 'labBaseline', 'weightLog']
 const TIMINGS = ['morning', 'evening', 'both']
 
@@ -290,7 +312,7 @@ export const live = reactive({
   presets: clone(PRESETS),
   tags: clone(TAGS),
   exerciseTypes: clone(EXERCISE_TYPES),
-  exerciseFactors: { ...EXERCISE_FACTORS },
+  exerciseFactors: {},
   exerciseProfiles: clone(EXERCISE_PROFILES),
   drinkPresets: clone(DRINK_PRESETS),
   medications: clone(MEDICATIONS),
@@ -377,7 +399,7 @@ function recompute() {
   live.presets = clone(customConfig.presets ?? PRESETS)
   live.tags = clone(customConfig.tags ?? TAGS)
   live.exerciseTypes = clone(customConfig.exerciseTypes ?? EXERCISE_TYPES)
-  live.exerciseFactors = { ...EXERCISE_FACTORS, ...(customConfig.exerciseFactors ?? {}) }
+  live.exerciseFactors = { ...(customConfig.exerciseFactors ?? {}) }
   const profiles = clone(EXERCISE_PROFILES)
   for (const [k, p] of Object.entries(customConfig.exerciseProfiles ?? {})) profiles[k] = { ...(profiles[k] || {}), ...p }
   live.exerciseProfiles = profiles
@@ -432,6 +454,7 @@ export function sanitizeCustomConfig(cfg) {
       if (!key || key.length > 40 || key === '__proto__' || !raw || typeof raw !== 'object') continue
       const p = {}
       if (raw.mode === 'reps' || raw.mode === 'duration') p.mode = raw.mode
+      if (CATEGORY_VALUES.includes(raw.category)) p.category = raw.category
       const rpm = Number(raw.repsPerMin)
       if (raw.repsPerMin != null && raw.repsPerMin !== '' && Number.isFinite(rpm) && rpm >= 1 && rpm <= 200) p.repsPerMin = Math.round(rpm)
       const met = Number(raw.met)
@@ -525,17 +548,6 @@ export function resetCustom(sections = SECTIONS) {
   if (changeListener) changeListener(list)
 }
 
-/** Walking-equivalent factor for an exercise type (1 when not configured). */
-export function exerciseFactor(type) {
-  const n = Number(live.exerciseFactors[String(type || '').trim()])
-  return Number.isFinite(n) && n > 0 ? n : 1
-}
-
-/** Minutes counted toward the daily target: actual minutes x factor, at least 1. */
-export function equivalentMinutes(actualMin, factor = 1) {
-  return Math.max(1, Math.round((Number(actualMin) || 0) * (Number(factor) || 1)))
-}
-
 const DURATION_HINT = /走|跑|踏步|騎|游|跳繩|有氧|瑜伽|拉筋|伸展/
 const REPS_HINT = /抬|蹲|伏地|挺身|仰臥|捲腹|弓步|開合跳|波比|舉|划船/
 
@@ -546,20 +558,34 @@ export function guessExerciseMode(type) {
   return REPS_HINT.test(t) ? 'reps' : 'duration'
 }
 
+const STRENGTH_HINT = /蹲|重訓|肌力|伏地|挺身|啞鈴|壺鈴|槓|彈力|阻力|棒式|弓步|抬腳跟|仰臥|捲腹|舉|划船/
+// Walking / strolling stays aerobic: the intensity chosen at logging time decides whether it counts.
+const LIGHT_HINT = /伸展|拉筋|瑜伽|家事|打掃|逛|買/
+
+/**
+ * Fallback category from the name: strength moves -> strength, stretching / chores / strolling -> light,
+ * everything else (walking, marching, cycling, jumping jacks...) -> aerobic. The user can change it.
+ */
+export function guessExerciseCategory(type) {
+  const t = String(type || '')
+  if (STRENGTH_HINT.test(t)) return 'strength'
+  if (LIGHT_HINT.test(t)) return 'light'
+  return 'aerobic'
+}
+
 /**
  * Effective settings for an exercise type, with fallbacks filled in.
- * `metEstimated` is true when the MET comes from the factor instead of being set explicitly.
+ * `met` is the explicit MET or null; `metEstimated` is true when none is set (estimateMet() is used).
  */
 export function exerciseProfile(type) {
   const key = String(type || '').trim()
   const p = live.exerciseProfiles[key] || {}
-  const factor = exerciseFactor(key)
   return {
     mode: p.mode || guessExerciseMode(key),
+    category: p.category || guessExerciseCategory(key),
     repsPerMin: p.repsPerMin || DEFAULT_REPS_PER_MIN,
-    met: p.met || Math.round(WALKING_MET * factor * 10) / 10,
+    met: p.met || null,
     metEstimated: !p.met,
-    factor,
   }
 }
 
@@ -579,6 +605,14 @@ export function exerciseKcal(met, weightKg, actualMin) {
 /** Medications that should be taken in a slot ('morning' | 'evening'). */
 export function medsForSlot(slot) {
   return live.medications.filter((m) => m.timing === 'both' || m.timing === slot)
+}
+
+/**
+ * true when the medication list contains an SGLT-2 inhibitor (generic names end in "-gliflozin", or the
+ * entry says SGLT-2). These drugs work by passing glucose into the urine, so a positive U-Sugar is expected.
+ */
+export function takesSglt2Inhibitor(meds = live.medications) {
+  return (Array.isArray(meds) ? meds : []).some((m) => /gliflozin|sglt-?2/i.test(`${m?.name || ''} ${m?.dosage || ''}`))
 }
 
 export function medLabel(m) {

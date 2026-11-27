@@ -1,9 +1,11 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
-  equivalentMinutes,
+  estimateMet,
+  EXERCISE_CATEGORIES,
   exerciseKcal,
   exerciseProfile,
+  INTENSITIES,
   live,
   medsForSlot,
   medLabel,
@@ -19,9 +21,13 @@ import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
 import { moveItem, sameOrder } from '../data/reorder.js'
 import { changeWater, lastWaterTime, minutesBetween, removeWaterLog, undoWaterChange, untimedWaterCc, waterLogs } from '../data/waterLog.js'
 import { SICK_NOTE_MAX, SICK_SYMPTOMS, isHighRiskSick, sanitizeSick, sickLabels } from '../data/sickDay.js'
+import { exerciseDay, exerciseWeek, isAfterMeal, isPostMealLog, ketoneCaution, logCredit } from '../data/exercise.js'
+import { RULES } from '../data/targetRules.js'
 
 const props = defineProps({
   day: { type: Object, required: true },
+  // All days ({ 'YYYY-MM-DD': day }) for the rolling 7-day exercise totals.
+  days: { type: Object, default: () => ({}) },
   // Follow-up lab records (App state); gemini.js sanitizes them into the LAB DATA prompt block.
   labs: { type: Array, default: () => [] },
 })
@@ -359,13 +365,17 @@ const medDone = computed(() => {
 })
 
 // ---------- exercise & exercise type presets ----------
-// Every log stores duration_min = walking-equivalent minutes (counts toward the target), plus
-// actual_min, factor and a reference-only kcal estimate. Reps are turned into minutes with the
-// type's pace (repsPerMin), so charts and daily totals stay in minutes.
+// Every log stores its category (aerobic / strength / light), the talk-test intensity (aerobic only),
+// whether it was after a meal, actual_min (= duration_min) and a reference-only kcal estimate.
+// Reps are turned into minutes with the type's pace (repsPerMin). How minutes count toward the daily
+// post-meal target and the weekly aerobic / strength targets is decided in src/data/exercise.js.
 
 function isRepsLog(log) {
   return !!(log && (log.mode === 'reps' || Number(log.reps) > 0))
 }
+
+const CATEGORY_LABEL = Object.fromEntries(EXERCISE_CATEGORIES.map((c) => [c.value, c.label]))
+const INTENSITY_LABEL = Object.fromEntries(INTENSITIES.map((i) => [i.value, i.label]))
 
 const exerciseForm = reactive({
   type: live.exerciseTypes[0] || '餐後踏步',
@@ -374,21 +384,49 @@ const exerciseForm = reactive({
   mode: 'duration',
   reps: 50,
   sets: 3,
+  intensity: 'moderate',
+  postMeal: null, // null = follow the automatic guess (a meal eaten within the last 2 hours)
 })
 const currentProfile = computed(() => exerciseProfile(exerciseForm.type))
-const currentFactor = computed(() => currentProfile.value.factor)
+const currentCategory = computed(() => currentProfile.value.category)
+const currentMet = computed(() => currentProfile.value.met || estimateMet(currentCategory.value, exerciseForm.intensity))
 const repsActualPreview = computed(() =>
   repsToMinutes(exerciseForm.reps, exerciseForm.sets, currentProfile.value.repsPerMin),
 )
-const repsDurationPreview = computed(() => equivalentMinutes(repsActualPreview.value, currentFactor.value))
-const durationEquivalent = computed(() => equivalentMinutes(exerciseForm.duration, currentFactor.value))
 const kcalPreview = computed(() =>
   exerciseKcal(
-    currentProfile.value.met,
+    currentMet.value,
     live.targets.userWeight,
     exerciseForm.mode === 'reps' ? repsActualPreview.value : Number(exerciseForm.duration) || 0,
   ),
 )
+/** What the current form entry would count toward (shown under the inputs). */
+const creditPreview = computed(() => {
+  const c = currentCategory.value
+  if (c === 'strength') return '計入每週肌力天數'
+  if (c === 'light') return '記為輕度活動（不計入每週有氧）'
+  if (exerciseForm.intensity === 'light') return '輕鬆：記為輕度活動（不計入每週有氧）'
+  if (exerciseForm.intensity === 'vigorous') return '費力：每分鐘算 2 分鐘有氧'
+  return '中等：計入每週有氧'
+})
+
+/** Default for the "after a meal" box: a meal on this day eaten within the post-meal window before now. */
+function postMealGuess() {
+  return isAfterMeal(props.day.meals, nowTime(), RULES.exercise.postMealWindowMin)
+}
+function postMealChecked() {
+  return exerciseForm.postMeal ?? postMealGuess()
+}
+
+// Daily and rolling 7-day totals (the viewed day replaces its stored copy so edits show at once).
+const todayExercise = computed(() => exerciseDay(props.day))
+const weekExercise = computed(() => exerciseWeek({ ...props.days, [props.day.date]: props.day }, props.day.date))
+/** Weekly exercise and the ketone caution, added to the day context sent to the AI. */
+function exercisePromptExtras() {
+  return { exercise_week: weekExercise.value, ...(ketone.value ? { ketone_caution: ketone.value } : {}) }
+}
+const postMealReached = computed(() => todayExercise.value.postMeal >= (Number(live.targets.exerciseTarget) || 0))
+const ketone = computed(() => ketoneCaution(props.labs))
 const exerciseKcalTotal = computed(() =>
   (props.day.exercise_logs || []).reduce((sum, x) => sum + (Number(x?.kcal) || 0), 0),
 )
@@ -418,7 +456,7 @@ const newExerciseType = ref('')
 
 function syncExerciseTotal(d) {
   d.exercise_logs = d.exercise_logs || []
-  d.exercise_min = d.exercise_logs.reduce((sum, item) => sum + (Number(item.duration_min) || 0), 0)
+  d.exercise_min = exerciseDay(d).total
 }
 
 function addExerciseLog(quickMin = null) {
@@ -427,6 +465,20 @@ function addExerciseLog(quickMin = null) {
   const repsMode = quickMin == null && exerciseForm.mode === 'reps'
   const profile = exerciseProfile(type)
   const weight = live.targets.userWeight
+  const time = nowTime()
+  const intensity = profile.category === 'aerobic' ? exerciseForm.intensity : undefined
+  const met = profile.met || estimateMet(profile.category, intensity)
+  const common = {
+    id: uid('ex'),
+    time,
+    type,
+    category: profile.category,
+    ...(intensity ? { intensity } : {}),
+    post_meal: postMealChecked(),
+    met,
+    note: exerciseForm.note.trim(),
+    source: 'manual',
+  }
   let entry
   if (repsMode) {
     const reps = Math.round(Number(exerciseForm.reps) || 0)
@@ -436,40 +488,14 @@ function addExerciseLog(quickMin = null) {
       return
     }
     const actual = repsToMinutes(reps, sets, profile.repsPerMin)
-    entry = {
-      id: uid('ex'),
-      time: nowTime(),
-      type,
-      mode: 'reps',
-      duration_min: equivalentMinutes(actual, profile.factor),
-      actual_min: actual,
-      factor: profile.factor,
-      met: profile.met,
-      kcal: exerciseKcal(profile.met, weight, actual),
-      reps,
-      sets,
-      note: exerciseForm.note.trim(),
-      source: 'manual',
-    }
+    entry = { ...common, mode: 'reps', duration_min: actual, actual_min: actual, kcal: exerciseKcal(met, weight, actual), reps, sets }
   } else {
     const dMin = Number(quickMin != null ? quickMin : exerciseForm.duration)
     if (!dMin || dMin <= 0) {
       exerciseManageError.value = '請輸入大於 0 的運動分鐘數。'
       return
     }
-    entry = {
-      id: uid('ex'),
-      time: nowTime(),
-      type,
-      mode: 'duration',
-      duration_min: equivalentMinutes(dMin, profile.factor),
-      actual_min: dMin,
-      factor: profile.factor,
-      met: profile.met,
-      kcal: exerciseKcal(profile.met, weight, dMin),
-      note: exerciseForm.note.trim(),
-      source: 'manual',
-    }
+    entry = { ...common, mode: 'duration', duration_min: dMin, actual_min: dMin, kcal: exerciseKcal(met, weight, dMin) }
   }
   commit((d) => {
     // Migrate legacy single number if logs array was previously empty
@@ -491,6 +517,7 @@ function addExerciseLog(quickMin = null) {
     syncExerciseTotal(d)
   })
   exerciseForm.note = ''
+  exerciseForm.postMeal = null
   const amount = entry.mode === 'reps' ? `${entry.reps} 下 × ${entry.sets} 組` : `${entry.actual_min} 分`
   const entryId = entry.id
   offerUndo(`已記錄 ${entry.type} ${amount}`, () => {
@@ -568,7 +595,7 @@ function deleteExerciseTypePreset(t) {
   }
 }
 
-// AI suggestions for exercise types: [{ type, busy, error, mode, repsPerMin, factor, met, reason }].
+// AI suggestions for exercise types: [{ type, busy, error, mode, category, repsPerMin, met, reason }].
 // Nothing is saved until the user presses 採用.
 const profileSuggestions = ref([])
 const evaluatingAll = ref(false)
@@ -585,7 +612,7 @@ async function askProfileSuggestion(t) {
   try {
     const p = exerciseProfile(t)
     const recent = (props.day.exercise_logs || []).filter((e) => e && e.type === t)
-    const current = { mode: p.mode, repsPerMin: p.repsPerMin, factor: p.factor, met: p.metEstimated ? null : p.met }
+    const current = { mode: p.mode, category: p.category, repsPerMin: p.repsPerMin, met: p.met }
     Object.assign(item, await suggestExerciseProfile({ apiKey, type: t, current, recent }))
   } catch (err) {
     item.error = err.message || String(err)
@@ -606,15 +633,14 @@ async function evaluateAllTypes() {
 
 function adoptProfileSuggestion(s) {
   if (s.busy || s.error) return
-  const patch = { mode: s.mode, repsPerMin: s.repsPerMin, met: s.met }
+  const patch = { mode: s.mode, category: s.category, repsPerMin: s.repsPerMin, met: s.met }
   // Validate everything first so a suggestion is adopted completely or not at all.
-  const problem = exerciseProfileError(patch) || exerciseFactorError(s.factor)
+  const problem = exerciseProfileError(patch)
   if (problem) {
     exerciseManageError.value = `${s.type}：${problem}`
     return
   }
   setExerciseProfile(s.type, patch)
-  setExerciseFactor(s.type, s.factor)
   dismissProfileSuggestion(s)
 }
 
@@ -639,12 +665,6 @@ function exerciseProfileError(patch) {
   return ''
 }
 
-/** Error message for an invalid walking-equivalent factor, '' when valid. */
-function exerciseFactorError(value) {
-  const n = Number(value)
-  return Number.isFinite(n) && n >= 0.1 && n <= 5 ? '' : '換算係數請填 0.1 ～ 5（1 = 與散步相同）。'
-}
-
 function setExerciseProfile(t, patch) {
   exerciseManageError.value = exerciseProfileError(patch)
   if (exerciseManageError.value) return
@@ -654,20 +674,13 @@ function setExerciseProfile(t, patch) {
   if (exerciseForm.type === t) exerciseForm.mode = exerciseProfile(t).mode
 }
 
-function setExerciseFactor(t, value) {
-  exerciseManageError.value = exerciseFactorError(value)
-  if (exerciseManageError.value) return
-  updateCustom('exerciseFactors', { ...live.exerciseFactors, [t]: Number(value) })
-}
-
 function resetExerciseTypePresets() {
-  if (!window.confirm('確定要恢復預設運動類型快選、記錄方式與換算係數？')) return
+  if (!window.confirm('確定要恢復預設運動類型快選、記錄方式與類別？')) return
   resetCustom(['exerciseTypes', 'exerciseFactors', 'exerciseProfiles'])
   exerciseForm.type = live.exerciseTypes[0] || '餐後踏步'
   exerciseManageError.value = ''
 }
 
-const exerciseReached = computed(() => (props.day.exercise_min || 0) >= TARGETS.value.exerciseTarget)
 
 // ---------- meal input ----------
 const mealText = ref('')
@@ -918,7 +931,7 @@ async function submitMeal(withAI) {
     }
     startBusy()
     try {
-      const { date: _date, ...ctx } = summarizeDay(props.day, { beforeTime: entry.time })
+      const { date: _date, ...ctx } = { ...summarizeDay(props.day, { beforeTime: entry.time }), ...exercisePromptExtras() }
       entry.analysis = await analyzeMeal({
         apiKey,
         mealTime: entry.time,
@@ -954,8 +967,11 @@ async function submitMeal(withAI) {
         id: `ex-meal-${Date.now()}`,
         time: entry.time,
         type: '餐後踏步',
+        category: 'aerobic', // no intensity: counted as moderate but marked unrated
+        post_meal: true,
         mode: 'duration',
         duration_min: 20,
+        actual_min: 20,
         note: `來自餐點「${entry.analysis?.meal_name || entry.text.slice(0, 12) || '餐點'}」標籤連動`,
         source: 'meal_tag',
         meal_id: entry.id, // removed together with the meal (removeMeal)
@@ -1019,7 +1035,7 @@ async function runDaySummary() {
   try {
     const result = await summarizeDayAI({
       apiKey,
-      totals: summarizeDay(props.day),
+      totals: { ...summarizeDay(props.day), ...exercisePromptExtras() },
       meals: mealsForSummary(sortMealsByTime(props.day.meals)),
       meds: props.day.meds,
       labs: props.labs,
@@ -1468,9 +1484,12 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       <div class="flex items-start justify-between gap-2">
         <div>
           <h2 class="font-semibold text-slate-800">🏃 運動紀錄</h2>
-          <p class="mt-0.5 text-xs" :class="exerciseReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
-            今日累計：{{ day.exercise_min || 0 }} 分鐘 (目標 {{ TARGETS.exerciseTarget }} 分)
-            <span v-if="exerciseKcalTotal" class="font-normal text-slate-500"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
+          <p class="mt-0.5 text-xs" :class="postMealReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'" data-testid="ex-post-meal">
+            餐後活動：{{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
+          </p>
+          <p class="mt-0.5 text-xs text-slate-500">
+            今日：有氧 {{ todayExercise.aerobic }} 分 · 輕度 {{ todayExercise.light }} 分 · 肌力 {{ todayExercise.strengthDone ? '✓' : '—' }}
+            <span v-if="exerciseKcalTotal"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
           </p>
         </div>
         <button
@@ -1480,6 +1499,31 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
         >
           {{ exerciseEditMode ? '✓ 完成編輯' : '⚙️ 編輯運動快選' }}
         </button>
+      </div>
+
+      <!-- Rolling 7 days vs the weekly targets -->
+      <div class="mt-2 grid grid-cols-2 gap-2 text-xs" data-testid="ex-week">
+        <div class="rounded-lg bg-slate-50 p-2 ring-1 ring-slate-200">
+          <p class="text-slate-500">近 7 天有氧（中等以上）</p>
+          <p class="font-semibold" :class="weekExercise.aerobic >= TARGETS.aerobicWeekTarget ? 'text-emerald-700' : 'text-slate-800'">
+            {{ weekExercise.aerobic }} / {{ TARGETS.aerobicWeekTarget }} 分 · {{ weekExercise.aerobicDays }} 天
+          </p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-2 ring-1 ring-slate-200">
+          <p class="text-slate-500">近 7 天肌力</p>
+          <p class="font-semibold" :class="weekExercise.strengthDays >= TARGETS.strengthWeekTarget ? 'text-emerald-700' : 'text-slate-800'">
+            {{ weekExercise.strengthDays }} / {{ TARGETS.strengthWeekTarget }} 天
+          </p>
+        </div>
+      </div>
+      <p v-if="weekExercise.restDays >= RULES.exercise.maxRestDays" class="mt-1.5 text-xs text-amber-700">
+        已經 {{ weekExercise.restDays >= 7 ? '7 天以上' : `${weekExercise.restDays} 天` }}沒有中等以上的有氧（含今天），指引建議不要連續 {{ RULES.exercise.maxRestDays }} 天以上沒運動。
+      </p>
+      <p v-if="weekExercise.unrated" class="mt-1 text-[11px] text-slate-400">
+        其中 {{ weekExercise.unrated }} 分來自沒有選強度的紀錄（舊紀錄或餐點標籤），暫以中等計算。
+      </p>
+      <div v-if="ketone" class="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800 ring-1 ring-amber-200" role="alert" data-testid="ex-ketone">
+        ⚠️ 最近一次尿酮 {{ ketone.value }}（{{ ketone.date }}）不是陰性：先以輕鬆到中等強度為主，不要做費力運動，也不要空腹運動；飯後運動比較安全，記得補水。
       </div>
 
       <!-- Normal mode -->
@@ -1514,7 +1558,34 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
           >
             次數模式
           </button>
+          <span class="ml-auto self-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" :title="EXERCISE_CATEGORIES.find((c) => c.value === currentCategory)?.hint">
+            類別：{{ CATEGORY_LABEL[currentCategory] }}
+          </span>
         </div>
+
+        <!-- Talk-test intensity (aerobic only) -->
+        <div v-if="currentCategory === 'aerobic'" class="space-y-1" data-testid="ex-intensity">
+          <p class="text-xs text-slate-500">強度（講話測試）</p>
+          <div class="grid grid-cols-3 gap-1.5">
+            <button
+              v-for="i in INTENSITIES"
+              :key="i.value"
+              type="button"
+              class="rounded-lg border px-2 py-1.5 text-left text-xs"
+              :class="exerciseForm.intensity === i.value ? 'border-teal-600 bg-teal-50 text-teal-900' : 'border-slate-200 bg-white text-slate-600'"
+              @click="exerciseForm.intensity = i.value"
+            >
+              <span class="font-semibold">{{ i.label }}<template v-if="i.value === 'vigorous' && ketone"> ⚠️</template></span>
+              <span class="mt-0.5 block text-[11px] leading-snug opacity-80">{{ i.hint }}</span>
+            </button>
+          </div>
+          <p v-if="exerciseForm.intensity === 'vigorous' && ketone" class="text-xs text-amber-700">尿酮還不是陰性，先不要做費力運動。</p>
+        </div>
+
+        <label class="flex items-center gap-2 text-xs text-slate-600">
+          <input type="checkbox" :checked="postMealChecked()" @change="exerciseForm.postMeal = $event.target.checked" />
+          飯後 2 小時內的活動（計入餐後活動）
+        </label>
 
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-12">
           <input
@@ -1532,9 +1603,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               class="w-20 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
             />
             <span class="text-xs text-slate-500">分</span>
-            <span class="text-xs font-medium text-indigo-700">
-              <template v-if="currentFactor !== 1">× {{ currentFactor }} ≈ {{ durationEquivalent }} 分（折合散步）· </template>約 {{ kcalPreview }} kcal
-            </span>
+            <span class="text-xs font-medium text-indigo-700">{{ creditPreview }} · 約 {{ kcalPreview }} kcal</span>
             <button
               type="button"
               class="rounded-lg bg-teal-50 px-2.5 py-2 text-xs font-medium text-teal-800 ring-1 ring-teal-200 active:bg-teal-100"
@@ -1596,8 +1665,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               +100下
             </button>
             <span class="text-xs font-medium text-indigo-700">
-              約 {{ repsActualPreview }} 分（每分鐘 {{ currentProfile.repsPerMin }} 下）<template v-if="currentFactor !== 1"> × {{ currentFactor }}</template>
-              ≈ 折合散步 {{ repsDurationPreview }} 分 · 約 {{ kcalPreview }} kcal
+              約 {{ repsActualPreview }} 分（每分鐘 {{ currentProfile.repsPerMin }} 下）· {{ creditPreview }} · 約 {{ kcalPreview }} kcal
             </span>
           </div>
         </div>
@@ -1624,8 +1692,8 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
       <!-- Edit mode: manage exercise type presets -->
       <div v-else class="mt-3 space-y-3 rounded-xl border border-teal-200 bg-teal-50/40 p-3">
         <p class="text-xs text-slate-500">
-          每個運動項目可設定：記錄方式（時間或次數）、每分鐘大約幾下（次數換算成分鐘用）、換算係數（1＝與散步每分鐘效果相同，&gt;1 表示強度較高），以及 MET（估算卡路里用，散步約 3.5；留空則由係數推估）。
-          計入目標的是「折合散步分鐘」；卡路里只是參考。按「AI」可取得建議，確認後才會儲存。數值為粗略估計，建議與醫師或教練確認。
+          每個運動項目可設定：記錄方式（時間或次數）、每分鐘大約幾下（次數換算成分鐘用）、類別，以及 MET（估算卡路里用，散步約 3.5；留空則依類別與強度推估）。
+          類別：有氧（記錄時再選強度，中等以上才計入每週有氧）、肌力（計入每週肌力天數）、輕度活動（只記錄）。卡路里只是參考。按「AI」可取得建議，確認後才會儲存。數值為粗略估計，建議與醫師或教練確認。
         </p>
         <button
           type="button"
@@ -1698,22 +1766,20 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
                 下
               </label>
               <label class="flex items-center gap-1">
-                係數
-                <input
-                  :value="live.exerciseFactors[t] ?? 1"
-                  type="number"
-                  step="0.1"
-                  min="0.1"
-                  max="5"
-                  class="w-14 rounded border border-slate-200 px-1 py-0.5 text-center text-xs text-slate-800"
-                  @change="setExerciseFactor(t, $event.target.value)"
-                />
+                類別
+                <select
+                  :value="exerciseProfile(t).category"
+                  class="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-800"
+                  @change="setExerciseProfile(t, { category: $event.target.value })"
+                >
+                  <option v-for="c in EXERCISE_CATEGORIES" :key="c.value" :value="c.value">{{ c.label }}</option>
+                </select>
               </label>
               <label class="flex items-center gap-1">
                 MET
                 <input
                   :value="exerciseProfile(t).metEstimated ? '' : exerciseProfile(t).met"
-                  :placeholder="String(exerciseProfile(t).met)"
+                  :placeholder="String(estimateMet(exerciseProfile(t).category, 'moderate'))"
                   type="number"
                   step="0.1"
                   min="1"
@@ -1746,7 +1812,7 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
             <template v-else>
               <p class="mt-0.5">
                 記錄：{{ MODE_LABEL[s.mode] }}<template v-if="s.mode === 'reps'"> · 每分鐘 {{ s.repsPerMin }} 下</template>
-                · 係數 {{ s.factor }} · MET {{ s.met }}
+                · 類別 {{ CATEGORY_LABEL[s.category] }} · MET {{ s.met }}
               </p>
               <p v-if="s.reason" class="mt-0.5 text-indigo-800">{{ s.reason }}</p>
             </template>
@@ -1810,11 +1876,13 @@ const presetCategories = computed(() => [...new Set(live.presets.map((p) => p.ca
               <span
                 v-if="isRepsLog(log)"
                 class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
-              >{{ log.reps }} 下 × {{ log.sets || 1 }} 組 · 折合 {{ log.duration_min }} 分</span>
-              <span v-else class="ml-1.5 font-semibold text-teal-600">
-                <template v-if="log.factor && log.factor !== 1">{{ log.actual_min }} 分 × {{ log.factor }} = {{ log.duration_min }} 分（折合散步）</template>
-                <template v-else>{{ log.duration_min }} 分鐘</template>
+              >{{ log.reps }} 下 × {{ log.sets || 1 }} 組 · 約 {{ logCredit(log).actual }} 分</span>
+              <span v-else class="ml-1.5 font-semibold text-teal-600">{{ logCredit(log).actual }} 分鐘</span>
+              <span class="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                <template v-if="log.category">{{ CATEGORY_LABEL[log.category] }}<template v-if="log.intensity"> · {{ INTENSITY_LABEL[log.intensity] }}</template></template>
+                <template v-else>未分類（舊紀錄）</template>
               </span>
+              <span v-if="isPostMealLog(log)" class="ml-1.5 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">餐後</span>
               <span
                 v-if="log.source === 'meal_tag'"
                 class="ml-1.5 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700"
