@@ -472,6 +472,13 @@ function exercisePromptExtras() {
   return { exercise_week: weekExercise.value, ...(ketone.value ? { ketone_caution: ketone.value } : {}) }
 }
 const postMealReached = computed(() => todayExercise.value.postMeal >= (Number(live.targets.exerciseTarget) || 0))
+/** Progress bar width (0–100) for today's post-meal activity. */
+const postMealPct = computed(() => {
+  const target = Number(live.targets.exerciseTarget) || 0
+  if (target <= 0) return todayExercise.value.postMeal > 0 ? 100 : 0
+  return Math.min(100, Math.round((todayExercise.value.postMeal / target) * 100))
+})
+const postMealHelpOpen = ref(false)
 const ketone = computed(() => ketoneCaution(props.labs))
 const exerciseKcalTotal = computed(() =>
   (props.day.exercise_logs || []).reduce((sum, x) => sum + (Number(x?.kcal) || 0), 0),
@@ -1769,51 +1776,118 @@ function subTabClass(id) {
           {{ exerciseEditMode ? '✓ 完成編輯' : '⚙️ 編輯運動快選' }}
         </button>
       </div>
-      <p class="mt-1 text-xs" :class="postMealReached ? 'text-emerald-600 font-semibold' : 'text-slate-500'" data-testid="ex-post-meal">
-        餐後活動（一天合計）：{{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
-      </p>
-      <p class="text-[11px] text-slate-400">不用每餐都做，建議優先放在晚餐後；也可以分在幾餐飯後。</p>
-      <p class="mt-0.5 text-xs text-slate-500">
-        今日：有氧 {{ todayExercise.aerobic }} 分 · 輕度 {{ todayExercise.light }} 分 · 肌力 {{ todayExercise.strengthDone ? '✓' : '—' }}
-        <span v-if="exerciseKcalTotal"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
-      </p>
+      <!-- Today's progress: post-meal activity, rolling 7 days vs the weekly targets, today's totals -->
+      <div class="mt-3 space-y-2.5 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200" data-testid="ex-progress">
+        <div>
+          <div class="flex items-center justify-between gap-2 text-xs">
+            <span class="flex items-center gap-1 font-medium text-slate-700">
+              餐後活動（一天合計）
+              <button
+                type="button"
+                class="h-4 w-4 rounded-full bg-slate-200 text-[10px] leading-4 text-slate-600"
+                :aria-expanded="postMealHelpOpen"
+                aria-label="餐後活動說明"
+                @click="postMealHelpOpen = !postMealHelpOpen"
+              >i</button>
+            </span>
+            <span :class="postMealReached ? 'text-emerald-600 font-semibold' : 'text-slate-600'" data-testid="ex-post-meal">
+              {{ todayExercise.postMeal }} / {{ TARGETS.exerciseTarget }} 分{{ postMealReached ? ' ✓' : '' }}
+            </span>
+          </div>
+          <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200">
+            <div class="h-full rounded-full" :class="postMealReached ? 'bg-emerald-500' : 'bg-teal-500'" :style="{ width: `${postMealPct}%` }"></div>
+          </div>
+          <p v-if="postMealHelpOpen" class="mt-1 text-[11px] text-slate-500">不用每餐都做，建議優先放在晚餐後；也可以分在幾餐飯後。</p>
+        </div>
 
-      <!-- Rolling 7 days vs the weekly targets -->
-      <div class="mt-2 grid grid-cols-2 gap-2 text-xs" data-testid="ex-week">
-        <div class="rounded-lg bg-slate-50 p-2 ring-1 ring-slate-200">
-          <p class="text-slate-500">近 7 天有氧（中等以上）</p>
-          <p class="font-semibold" :class="weekExercise.aerobic >= TARGETS.aerobicWeekTarget ? 'text-emerald-700' : 'text-slate-800'">
-            {{ weekExercise.aerobic }} / {{ TARGETS.aerobicWeekTarget }} 分 · {{ weekExercise.aerobicDays }} 天
-          </p>
+        <div class="grid grid-cols-2 gap-2 text-xs" data-testid="ex-week">
+          <div class="rounded-lg bg-white p-2 ring-1 ring-slate-200">
+            <p class="text-slate-500">近 7 天有氧（中等以上）</p>
+            <p class="font-semibold" :class="weekExercise.aerobic >= TARGETS.aerobicWeekTarget ? 'text-emerald-700' : 'text-slate-800'">
+              {{ weekExercise.aerobic }} / {{ TARGETS.aerobicWeekTarget }} 分 · {{ weekExercise.aerobicDays }} 天
+            </p>
+            <p
+              v-if="weekExercise.unrated"
+              class="text-[10px] text-slate-400"
+              title="沒有選強度的紀錄（舊紀錄或餐點標籤），暫以中等計算"
+            >含 {{ weekExercise.unrated }} 分未分強度（以中等計）</p>
+          </div>
+          <div class="rounded-lg bg-white p-2 ring-1 ring-slate-200">
+            <p class="text-slate-500">近 7 天肌力</p>
+            <p class="font-semibold" :class="weekExercise.strengthDays >= TARGETS.strengthWeekTarget ? 'text-emerald-700' : 'text-slate-800'">
+              {{ weekExercise.strengthDays }} / {{ TARGETS.strengthWeekTarget }} 天
+            </p>
+          </div>
         </div>
-        <div class="rounded-lg bg-slate-50 p-2 ring-1 ring-slate-200">
-          <p class="text-slate-500">近 7 天肌力</p>
-          <p class="font-semibold" :class="weekExercise.strengthDays >= TARGETS.strengthWeekTarget ? 'text-emerald-700' : 'text-slate-800'">
-            {{ weekExercise.strengthDays }} / {{ TARGETS.strengthWeekTarget }} 天
-          </p>
-        </div>
+        <p v-if="weekExercise.restDays >= RULES.exercise.maxRestDays" class="text-xs text-amber-700">
+          已經 {{ weekExercise.restDays >= 7 ? '7 天以上' : `${weekExercise.restDays} 天` }}沒有中等以上的有氧（含今天），指引建議不要連續 {{ RULES.exercise.maxRestDays }} 天以上沒運動。
+        </p>
+        <p class="text-xs text-slate-500">
+          今日：有氧 {{ todayExercise.aerobic }} 分 · 輕度 {{ todayExercise.light }} 分 · 肌力 {{ todayExercise.strengthDone ? '✓' : '—' }}
+          <span v-if="exerciseKcalTotal"> · 約 {{ exerciseKcalTotal }} kcal（參考）</span>
+        </p>
       </div>
-      <p v-if="weekExercise.restDays >= RULES.exercise.maxRestDays" class="mt-1.5 text-xs text-amber-700">
-        已經 {{ weekExercise.restDays >= 7 ? '7 天以上' : `${weekExercise.restDays} 天` }}沒有中等以上的有氧（含今天），指引建議不要連續 {{ RULES.exercise.maxRestDays }} 天以上沒運動。
-      </p>
-      <p v-if="weekExercise.unrated" class="mt-1 text-[11px] text-slate-400">
-        其中 {{ weekExercise.unrated }} 分來自沒有選強度的紀錄（舊紀錄或餐點標籤），暫以中等計算。
-      </p>
-      <div v-if="ketone" class="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800 ring-1 ring-amber-200" role="alert" data-testid="ex-ketone">
-        ⚠️ 最近一次尿酮 {{ ketone.value }}（{{ ketone.date }}）不是陰性：先以輕鬆到中等強度為主，不要做費力運動，也不要空腹運動；飯後運動比較安全，記得補水。
+
+      <!-- Ketone caution: one line, details on tap -->
+      <details v-if="ketone" class="group mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-800 ring-1 ring-amber-200" role="alert" data-testid="ex-ketone">
+        <summary class="flex cursor-pointer list-none items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
+          <span class="font-medium">⚠️ 尿酮 {{ ketone.value }} 未轉陰：避免費力與空腹運動</span>
+          <span class="shrink-0 text-amber-600"><span class="group-open:hidden">▸ 說明</span><span class="hidden group-open:inline">▾ 收合</span></span>
+        </summary>
+        <p class="mt-1.5">
+          最近一次尿酮 {{ ketone.value }}（{{ ketone.date }}）不是陰性：先以輕鬆到中等強度為主，不要做費力運動，也不要空腹運動；飯後運動比較安全，記得補水。
+        </p>
+      </details>
+
+      <!-- Exercise logs list (above the form so today's entries are seen first) -->
+      <div v-if="day.exercise_logs?.length" class="mt-3" data-testid="ex-logs">
+        <div class="flex items-center justify-between">
+          <p class="text-xs font-semibold text-slate-600">今日運動明細</p>
+          <button class="text-xs text-rose-500 active:text-rose-600" @click="clearExerciseLogs">清空當日運動</button>
+        </div>
+        <ul class="mt-1 divide-y divide-slate-100">
+          <li v-for="log in exerciseLogsSorted" :key="log.id" class="flex items-start gap-2 py-1.5 text-sm">
+            <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
+            <div class="min-w-0 flex-1">
+              <span class="font-medium text-slate-800">{{ logDisplayName(log) }}</span>
+              <span v-if="logDisplayName(log) !== log.type" class="ml-1 text-xs text-slate-500">（{{ log.type }}）</span>
+              <span
+                v-if="isRepsLog(log)"
+                class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
+              >{{ log.reps }} 下 × {{ log.sets || 1 }} 組 · 約 {{ logCredit(log).actual }} 分</span>
+              <span v-else class="ml-1.5 font-semibold text-teal-600">{{ logCredit(log).actual }} 分鐘</span>
+              <span class="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                <template v-if="log.category">{{ CATEGORY_LABEL[log.category] }}<template v-if="log.intensity"> · {{ INTENSITY_LABEL[log.intensity] }}</template></template>
+                <template v-else>未分類（舊紀錄）</template>
+              </span>
+              <span v-if="isPostMealLog(log)" class="ml-1.5 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">餐後</span>
+              <span
+                v-if="log.source === 'meal_tag'"
+                class="ml-1.5 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700"
+              >餐點標籤連動</span>
+              <span v-if="log.kcal" class="ml-1.5 text-[11px] text-slate-400">約 {{ log.kcal }} kcal</span>
+              <p v-if="log.note" class="mt-0.5 text-xs text-slate-500">{{ log.note }}</p>
+            </div>
+            <button class="px-2 text-slate-300 active:text-rose-500" @click="removeExerciseLog(log.id)">✕</button>
+          </li>
+        </ul>
       </div>
 
       <!-- Normal mode -->
-      <div v-if="!exerciseEditMode" class="mt-3 space-y-3">
-        <div v-if="exerciseChipTabs.length" class="flex flex-wrap gap-1" role="tablist" data-testid="ex-chip-tabs">
+      <div v-if="!exerciseEditMode" class="mt-4 space-y-3">
+        <div class="flex items-center gap-2">
+          <p class="shrink-0 text-xs font-semibold text-slate-600">新增運動</p>
+          <div class="h-px flex-1 bg-slate-200"></div>
+        </div>
+        <div v-if="exerciseChipTabs.length" class="flex gap-4 border-b border-slate-200" role="tablist" data-testid="ex-chip-tabs">
           <button
             v-for="tab in exerciseChipTabs"
             :key="tab.value"
             type="button"
             role="tab"
             :aria-selected="shownExerciseChipTab === tab.value"
-            class="rounded-lg px-3 py-1 text-xs font-medium"
-            :class="shownExerciseChipTab === tab.value ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600 active:bg-slate-200'"
+            class="-mb-px border-b-2 px-1 pb-1.5 text-xs font-medium"
+            :class="shownExerciseChipTab === tab.value ? 'border-teal-600 text-teal-700' : 'border-transparent text-slate-500 active:text-slate-700'"
             @click="exerciseChipTab = tab.value"
           >
             {{ tab.label }}
@@ -2301,40 +2375,6 @@ function subTabClass(id) {
         >
           ↩︎ 恢復預設運動類型
         </button>
-      </div>
-
-      <!-- Exercise logs list -->
-      <div v-if="day.exercise_logs?.length" class="mt-3 border-t border-slate-100 pt-2.5">
-        <div class="flex items-center justify-between">
-          <p class="text-xs font-medium text-slate-400">今日運動明細</p>
-          <button class="text-xs text-rose-500 active:text-rose-600" @click="clearExerciseLogs">清空當日運動</button>
-        </div>
-        <ul class="mt-1 divide-y divide-slate-100">
-          <li v-for="log in exerciseLogsSorted" :key="log.id" class="flex items-start gap-2 py-1.5 text-sm">
-            <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
-            <div class="min-w-0 flex-1">
-              <span class="font-medium text-slate-800">{{ logDisplayName(log) }}</span>
-              <span v-if="logDisplayName(log) !== log.type" class="ml-1 text-xs text-slate-500">（{{ log.type }}）</span>
-              <span
-                v-if="isRepsLog(log)"
-                class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
-              >{{ log.reps }} 下 × {{ log.sets || 1 }} 組 · 約 {{ logCredit(log).actual }} 分</span>
-              <span v-else class="ml-1.5 font-semibold text-teal-600">{{ logCredit(log).actual }} 分鐘</span>
-              <span class="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
-                <template v-if="log.category">{{ CATEGORY_LABEL[log.category] }}<template v-if="log.intensity"> · {{ INTENSITY_LABEL[log.intensity] }}</template></template>
-                <template v-else>未分類（舊紀錄）</template>
-              </span>
-              <span v-if="isPostMealLog(log)" class="ml-1.5 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">餐後</span>
-              <span
-                v-if="log.source === 'meal_tag'"
-                class="ml-1.5 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700"
-              >餐點標籤連動</span>
-              <span v-if="log.kcal" class="ml-1.5 text-[11px] text-slate-400">約 {{ log.kcal }} kcal</span>
-              <p v-if="log.note" class="mt-0.5 text-xs text-slate-500">{{ log.note }}</p>
-            </div>
-            <button class="px-2 text-slate-300 active:text-rose-500" @click="removeExerciseLog(log.id)">✕</button>
-          </li>
-        </ul>
       </div>
     </section>
 
