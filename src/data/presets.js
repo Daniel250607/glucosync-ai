@@ -459,6 +459,11 @@ export function sanitizeCustomConfig(cfg) {
       if (raw.repsPerMin != null && raw.repsPerMin !== '' && Number.isFinite(rpm) && rpm >= 1 && rpm <= 200) p.repsPerMin = Math.round(rpm)
       const met = Number(raw.met)
       if (raw.met != null && raw.met !== '' && Number.isFinite(met) && met >= 1 && met <= 20) p.met = Math.round(met * 10) / 10
+      // Professional Chinese term and the user's description of the move (both optional text).
+      const term = typeof raw.term === 'string' ? raw.term.replace(/\s+/g, ' ').trim().slice(0, 30) : ''
+      if (term) p.term = term
+      const desc = typeof raw.desc === 'string' ? raw.desc.replace(/\s+/g, ' ').trim().slice(0, 200) : ''
+      if (desc) p.desc = desc
       if (Object.keys(p).length) profiles[key] = p
     }
     out.exerciseProfiles = profiles
@@ -586,6 +591,8 @@ export function exerciseProfile(type) {
     repsPerMin: p.repsPerMin || DEFAULT_REPS_PER_MIN,
     met: p.met || null,
     metEstimated: !p.met,
+    term: p.term || '',
+    desc: p.desc || '',
   }
 }
 

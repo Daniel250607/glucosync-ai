@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { eatenBefore, isClockTime, sortMealsByTime } from '../mealTime.js'
 import { applyCustomConfig, estimateMet, exerciseKcal, exerciseProfile, guessExerciseCategory, guessExerciseMode, live, repsToMinutes } from '../presets.js'
-import { normalizeExerciseProfile, summarizeDay } from '../../services/gemini.js'
+import { normalizeExerciseIdentity, normalizeExerciseProfile, summarizeDay } from '../../services/gemini.js'
 
 afterEach(() => applyCustomConfig({}))
 
@@ -107,8 +107,8 @@ describe('exercise profiles', () => {
 
 describe('normalizeExerciseProfile', () => {
   it('clamps AI values and rejects a missing category / met', () => {
-    expect(normalizeExerciseProfile({ mode: 'reps', category: 'strength', reps_per_min: 500, met: 0.2, reason: 'r' }))
-      .toEqual({ mode: 'reps', category: 'strength', repsPerMin: 200, met: 1, reason: 'r' })
+    expect(normalizeExerciseProfile({ mode: 'reps', category: 'strength', reps_per_min: 500, met: 0.2, term: ' 提踵 ', reason: 'r' }))
+      .toEqual({ mode: 'reps', category: 'strength', repsPerMin: 200, met: 1, term: '提踵', reason: 'r' })
     const ok = { category: 'aerobic', met: 3.5 }
     expect(normalizeExerciseProfile({ ...ok, mode: 'x', reps_per_min: 0 }).mode).toBe('duration')
     // 0 (duration activity) or junk -> default pace, never 1 rep/min (which would inflate reps-mode minutes)
@@ -117,5 +117,41 @@ describe('normalizeExerciseProfile', () => {
     expect(normalizeExerciseProfile({ ...ok, mode: 'reps', reps_per_min: 0.4 }).repsPerMin).toBe(20)
     expect(() => normalizeExerciseProfile({ category: 'aerobic', met: 'x' })).toThrow()
     expect(() => normalizeExerciseProfile({ category: 'cardio', met: 3 })).toThrow()
+    expect(normalizeExerciseProfile({ ...ok }).term).toBe('')
+  })
+})
+
+describe('normalizeExerciseIdentity', () => {
+  const ok = { category: 'strength', met: 2.8, mode: 'reps', reps_per_min: 20, term: '坐姿直膝抬腿', reason: 'r' }
+  it('needs the everyday name; trims and cuts long labels', () => {
+    expect(normalizeExerciseIdentity({ ...ok, name: '  坐著\n抬腿 ' })).toMatchObject({ name: '坐著 抬腿', term: '坐姿直膝抬腿', category: 'strength' })
+    expect(normalizeExerciseIdentity({ ...ok, name: 'x'.repeat(50) }).name).toHaveLength(20)
+    expect(normalizeExerciseIdentity({ ...ok, name: 'a', term: 'y'.repeat(50) }).term).toHaveLength(30)
+    expect(() => normalizeExerciseIdentity({ ...ok, name: '  ' })).toThrow()
+  })
+})
+
+describe('exercise term and description', () => {
+  it('profiles keep a cleaned term / description; empty ones are dropped', () => {
+    applyCustomConfig({ exerciseProfiles: { 坐著抬腿: { term: ' 坐姿直膝抬腿 ', desc: '坐椅子上\n腳抬到水平', category: 'strength' }, 散步: { term: '', desc: 5 } } })
+    expect(exerciseProfile('坐著抬腿')).toMatchObject({ term: '坐姿直膝抬腿', desc: '坐椅子上 腳抬到水平' })
+    expect(exerciseProfile('散步')).toMatchObject({ term: '', desc: '' })
+    applyCustomConfig({})
+  })
+  it('summarizeDay sends the term and description to the AI (log first, then the saved type)', () => {
+    applyCustomConfig({ exerciseProfiles: { 墊腳尖: { term: '提踵', desc: '扶椅背墊腳尖' } } })
+    const s = summarizeDay({
+      date: '2030-01-01',
+      exercise_logs: [
+        { id: 'a', type: '墊腳尖', mode: 'reps', reps: 20, sets: 1, actual_min: 1 },
+        { id: 'b', type: '游泳', term: '自由式游泳', desc: '慢慢游', actual_min: 20 },
+        { id: 'c', type: '散步', actual_min: 10 },
+      ],
+    })
+    expect(s.exercise_logs[0]).toMatchObject({ term: '提踵', description: '扶椅背墊腳尖' })
+    expect(s.exercise_logs[1]).toMatchObject({ term: '自由式游泳', description: '慢慢游' })
+    expect(s.exercise_logs[2]).not.toHaveProperty('term')
+    expect(s.exercise_logs[2]).not.toHaveProperty('description')
+    applyCustomConfig({})
   })
 })

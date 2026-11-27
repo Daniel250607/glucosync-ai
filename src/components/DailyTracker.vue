@@ -15,7 +15,20 @@ import {
   updateCustom,
   resetCustom,
 } from '../data/presets.js'
-import { MAX_MEAL_IMAGES, analyzeHydrationSchedule, analyzeMeal, mealsForSummary, suggestExerciseProfile, summarizeDay, summarizeDayAI } from '../services/gemini.js'
+import {
+  EXERCISE_DESC_MAX,
+  EXERCISE_NAME_MAX,
+  EXERCISE_TERM_MAX,
+  MAX_MEAL_IMAGES,
+  analyzeHydrationSchedule,
+  analyzeMeal,
+  cleanExerciseLabel,
+  identifyExercise,
+  mealsForSummary,
+  suggestExerciseProfile,
+  summarizeDay,
+  summarizeDayAI,
+} from '../services/gemini.js'
 import { getAiKey, todayKey } from '../firebase.js'
 import { isClockTime, sortMealsByTime } from '../data/mealTime.js'
 import { moveItem, sameOrder } from '../data/reorder.js'
@@ -390,7 +403,17 @@ const exerciseForm = reactive({
   time: '', // HH:MM the exercise started; '' = now (fill in when logging afterwards)
   postMeal: null, // null = follow the automatic guess (a meal eaten within 2 hours before the start time)
 })
-const currentProfile = computed(() => exerciseProfile(exerciseForm.type))
+// "✏️ 其他" identified by AI: a one-off profile (not saved as a quick-select) used while the typed name
+// still matches. { type, mode, category, repsPerMin, met, term, desc, reason } or null.
+const otherProfile = ref(null)
+/** exerciseProfile() plus the one-off "其他" profile when the typed name is the AI-identified one. */
+function profileFor(type) {
+  const base = exerciseProfile(type)
+  const o = otherProfile.value
+  if (!o || o.type !== String(type || '').trim() || live.exerciseTypes.includes(o.type)) return base
+  return { ...base, mode: o.mode, category: o.category, repsPerMin: o.repsPerMin, met: o.met, metEstimated: false, term: o.term, desc: o.desc }
+}
+const currentProfile = computed(() => profileFor(exerciseForm.type))
 const currentCategory = computed(() => currentProfile.value.category)
 const currentMet = computed(() => currentProfile.value.met || estimateMet(currentCategory.value, exerciseForm.intensity))
 const repsActualPreview = computed(() =>
@@ -457,9 +480,62 @@ function bumpReps(amount) {
 watch(
   () => exerciseForm.type,
   (type) => {
-    exerciseForm.mode = exerciseProfile(type).mode
+    exerciseForm.mode = profileFor(type).mode
   },
 )
+
+// AI name lookup for "✏️ 其他": the typed text is the description; the result replaces it with the everyday name.
+const otherIdentify = reactive({ busy: false, error: '' })
+async function identifyOtherExercise() {
+  const desc = cleanExerciseLabel(exerciseForm.type, EXERCISE_DESC_MAX)
+  otherIdentify.error = ''
+  if (!desc) {
+    otherIdentify.error = '請先輸入運動名稱或描述動作。'
+    return
+  }
+  const apiKey = getAiKey()
+  if (!apiKey) {
+    otherIdentify.error = '尚未設定 AI 的 API Key。'
+    emit('open-settings')
+    return
+  }
+  otherIdentify.busy = true
+  try {
+    const r = await identifyExercise({ apiKey, description: desc })
+    if (live.exerciseTypes.includes(r.name)) {
+      // Already a quick-select: use the saved settings instead of a second profile with the same name.
+      selectExerciseType(r.name)
+      otherProfile.value = null
+      showToast(`快選已有「${r.name}」，已直接選取`)
+      return
+    }
+    otherProfile.value = { ...r, type: r.name, desc }
+    exerciseForm.type = r.name
+    exerciseForm.mode = r.mode
+  } catch (err) {
+    otherIdentify.error = err.message || String(err)
+  } finally {
+    otherIdentify.busy = false
+  }
+}
+/** Save the AI-identified "其他" exercise as a quick-select type (with its term and description). */
+function saveOtherAsPreset() {
+  const o = otherProfile.value
+  if (!o || o.type !== exerciseForm.type.trim()) return
+  exerciseManageError.value = ''
+  if (live.exerciseTypes.includes(o.type)) {
+    exerciseManageError.value = '此運動類型已存在。'
+    return
+  }
+  updateCustom('exerciseTypes', [...live.exerciseTypes, o.type])
+  updateCustom('exerciseProfiles', {
+    ...live.exerciseProfiles,
+    [o.type]: { mode: o.mode, category: o.category, repsPerMin: o.repsPerMin, met: o.met, term: o.term, desc: o.desc },
+  })
+  exerciseOtherOpen.value = false
+  otherProfile.value = null
+  offerUndo(`已把「${o.type}」加入運動快選`, () => deleteExerciseTypePreset(o.type))
+}
 const exerciseEditMode = ref(false)
 const exerciseManageError = ref('')
 const newExerciseType = ref('')
@@ -473,7 +549,8 @@ function addExerciseLog(quickMin = null) {
   exerciseManageError.value = ''
   const type = (exerciseForm.type || '').trim() || '餐後踏步'
   const repsMode = quickMin == null && exerciseForm.mode === 'reps'
-  const profile = exerciseProfile(type)
+  const profile = profileFor(type)
+  const isPreset = live.exerciseTypes.includes(type)
   const weight = live.targets.userWeight
   if (exerciseForm.time && !isClockTime(exerciseForm.time)) {
     exerciseManageError.value = '運動時間格式不正確。'
@@ -486,6 +563,9 @@ function addExerciseLog(quickMin = null) {
     id: uid('ex'),
     time,
     type,
+    ...(profile.term && profile.term !== type ? { term: profile.term } : {}),
+    // A one-off "其他" keeps its description on the log; quick-select types keep it in their settings.
+    ...(!isPreset && profile.desc ? { desc: profile.desc } : {}),
     category: profile.category,
     ...(intensity ? { intensity } : {}),
     post_meal: postMealChecked(),
@@ -559,7 +639,7 @@ function clearExerciseLogs() {
 
 function addExerciseTypePreset() {
   exerciseManageError.value = ''
-  const t = newExerciseType.value.trim()
+  const t = cleanExerciseLabel(newExerciseType.value, EXERCISE_NAME_MAX)
   if (!t) return
   if (live.exerciseTypes.includes(t)) {
     exerciseManageError.value = '此運動類型已存在。'
@@ -568,8 +648,60 @@ function addExerciseTypePreset() {
   updateCustom('exerciseTypes', [...live.exerciseTypes, t])
   exerciseForm.type = t
   newExerciseType.value = ''
+  newTypeLookup.value = null
   // New type: ask AI right away when a key is set; otherwise the name-based guess applies.
   if (getAiKey()) askProfileSuggestion(t)
+}
+
+// Describe a move -> AI suggests the everyday name and the professional term (both editable) plus
+// the profile. Nothing is saved until 「加入快選」. { busy, error, desc, name, term, mode, ... } or null.
+const newTypeLookup = ref(null)
+async function lookupNewExerciseType() {
+  exerciseManageError.value = ''
+  const desc = cleanExerciseLabel(newExerciseType.value, EXERCISE_DESC_MAX)
+  if (!desc) {
+    exerciseManageError.value = '請先描述運動或動作。'
+    return
+  }
+  const apiKey = getAiKey()
+  if (!apiKey) {
+    exerciseManageError.value = '尚未設定 AI 的 API Key；也可以按「直接新增」只用名稱。'
+    emit('open-settings')
+    return
+  }
+  const item = reactive({ busy: true, error: '', desc })
+  newTypeLookup.value = item
+  try {
+    Object.assign(item, await identifyExercise({ apiKey, description: desc }))
+  } catch (err) {
+    item.error = err.message || String(err)
+  } finally {
+    item.busy = false
+  }
+}
+
+function adoptNewExerciseType() {
+  const s = newTypeLookup.value
+  if (!s || s.busy || s.error) return
+  exerciseManageError.value = ''
+  const name = cleanExerciseLabel(s.name, EXERCISE_NAME_MAX)
+  if (!name) {
+    exerciseManageError.value = '請填寫一般用語（快選按鈕上的名稱）。'
+    return
+  }
+  if (live.exerciseTypes.includes(name)) {
+    exerciseManageError.value = `已有「${name}」，請改用其他名稱，或按該項目的「AI」重新評估。`
+    return
+  }
+  const term = cleanExerciseLabel(s.term, EXERCISE_TERM_MAX)
+  updateCustom('exerciseTypes', [...live.exerciseTypes, name])
+  updateCustom('exerciseProfiles', {
+    ...live.exerciseProfiles,
+    [name]: { mode: s.mode, category: s.category, repsPerMin: s.repsPerMin, met: s.met, term, desc: s.desc },
+  })
+  exerciseForm.type = name
+  newExerciseType.value = ''
+  newTypeLookup.value = null
 }
 
 // ---------- drag to reorder exercise types (pointer events: works with touch and mouse) ----------
@@ -627,7 +759,14 @@ async function askProfileSuggestion(t) {
   try {
     const p = exerciseProfile(t)
     const recent = (props.day.exercise_logs || []).filter((e) => e && e.type === t)
-    const current = { mode: p.mode, category: p.category, repsPerMin: p.repsPerMin, met: p.met }
+    const current = {
+      mode: p.mode,
+      category: p.category,
+      repsPerMin: p.repsPerMin,
+      met: p.met,
+      ...(p.term ? { term: p.term } : {}),
+      ...(p.desc ? { desc: p.desc } : {}),
+    }
     Object.assign(item, await suggestExerciseProfile({ apiKey, type: t, current, recent }))
   } catch (err) {
     item.error = err.message || String(err)
@@ -648,7 +787,7 @@ async function evaluateAllTypes() {
 
 function adoptProfileSuggestion(s) {
   if (s.busy || s.error) return
-  const patch = { mode: s.mode, category: s.category, repsPerMin: s.repsPerMin, met: s.met }
+  const patch = { mode: s.mode, category: s.category, repsPerMin: s.repsPerMin, met: s.met, ...(s.term ? { term: s.term } : {}) }
   // Validate everything first so a suggestion is adopted completely or not at all.
   const problem = exerciseProfileError(patch)
   if (problem) {
@@ -1643,18 +1782,57 @@ function subTabClass(id) {
             ✏️ 其他
           </button>
         </div>
-        <input
-          v-if="customExerciseType"
-          v-model="exerciseForm.type"
-          type="text"
-          placeholder="輸入運動名稱（例如：游泳、超慢跑）"
-          class="w-full rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
-        />
+        <div v-if="customExerciseType" class="space-y-1.5" data-testid="ex-other-input">
+          <div class="flex gap-2">
+            <input
+              v-model="exerciseForm.type"
+              type="text"
+              :maxlength="EXERCISE_DESC_MAX"
+              placeholder="輸入名稱或描述動作（例如：坐在椅子上把腳抬到水平再放下）"
+              class="min-w-0 flex-1 rounded-lg border border-slate-300 p-2 text-sm text-slate-800"
+            />
+            <button
+              type="button"
+              class="shrink-0 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white active:bg-indigo-700 disabled:opacity-50"
+              :disabled="otherIdentify.busy"
+              @click="identifyOtherExercise"
+            >
+              {{ otherIdentify.busy ? '查詢中…' : '🔍 AI 找名稱' }}
+            </button>
+          </div>
+          <p v-if="otherIdentify.error" class="text-xs text-rose-700">{{ otherIdentify.error }}</p>
+          <div
+            v-else-if="otherProfile && otherProfile.type === exerciseForm.type.trim()"
+            class="rounded-lg bg-indigo-50 p-2 text-xs text-indigo-900 ring-1 ring-indigo-200"
+          >
+            <p>
+              <span class="font-medium">{{ otherProfile.type }}</span>
+              <template v-if="otherProfile.term && otherProfile.term !== otherProfile.type"> · 專業用語：{{ otherProfile.term }}</template>
+            </p>
+            <p class="mt-0.5 text-indigo-800">
+              {{ CATEGORY_LABEL[otherProfile.category] }} · 記錄{{ MODE_LABEL[otherProfile.mode] }} · MET {{ otherProfile.met }}<template v-if="otherProfile.reason"> · {{ otherProfile.reason }}</template>
+            </p>
+            <div class="mt-1.5 flex items-center gap-2">
+              <button
+                type="button"
+                class="rounded-lg bg-white px-2.5 py-1 text-indigo-700 ring-1 ring-indigo-300 active:bg-indigo-100"
+                @click="saveOtherAsPreset"
+              >
+                ⭐ 存成快選
+              </button>
+              <span class="text-[11px] text-indigo-700">不存也可以直接記錄這一次</span>
+            </div>
+          </div>
+          <p v-else class="text-[11px] text-slate-400">描述得越清楚（姿勢、動作、用什麼器材），AI 判斷的類別與 MET 越準確。</p>
+        </div>
 
         <!-- Category of the chosen type + how it is logged -->
         <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500">
           <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" :title="EXERCISE_CATEGORIES.find((c) => c.value === currentCategory)?.hint">
             類別：{{ CATEGORY_LABEL[currentCategory] }}
+          </span>
+          <span v-if="!customExerciseType && currentProfile.term && currentProfile.term !== exerciseForm.type" class="text-[11px] text-slate-500">
+            專業用語：{{ currentProfile.term }}
           </span>
           <span class="ml-auto">記錄方式</span>
           <div class="flex gap-1">
@@ -1815,7 +1993,7 @@ function subTabClass(id) {
       <!-- Edit mode: manage exercise type presets -->
       <div v-else class="mt-3 space-y-3 rounded-xl border border-teal-200 bg-teal-50/40 p-3">
         <p class="text-xs text-slate-500">
-          每個運動項目可設定：記錄方式（時間或次數）、每分鐘大約幾下（次數換算成分鐘用）、類別，以及 MET（估算卡路里用，散步約 3.5；留空則依類別與強度推估）。
+          每個運動項目可設定：記錄方式（時間或次數）、每分鐘大約幾下（次數換算成分鐘用）、類別、MET（估算卡路里用，散步約 3.5；留空則依類別與強度推估），以及專業用語（AI 分析時參考，讓 AI 知道實際是哪個動作）。
           類別：有氧（記錄時再選強度，中等以上才計入每週有氧）、肌力（計入每週肌力天數）、輕度活動（只記錄）。卡路里只是參考。按「AI」可取得建議，確認後才會儲存。數值為粗略估計，建議與醫師或教練確認。
         </p>
         <button
@@ -1845,7 +2023,10 @@ function subTabClass(id) {
                 @pointerup="endExerciseDrag"
                 @pointercancel="endExerciseDrag"
               >⠿</span>
-              <span class="min-w-0 flex-1 truncate font-medium text-slate-800">{{ t }}</span>
+              <span class="min-w-0 flex-1 truncate">
+                <span class="font-medium text-slate-800">{{ t }}</span>
+                <span v-if="exerciseProfile(t).term && exerciseProfile(t).term !== t" class="ml-1.5 text-slate-500">{{ exerciseProfile(t).term }}</span>
+              </span>
               <button
                 type="button"
                 class="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] text-indigo-700 ring-1 ring-indigo-200 active:bg-indigo-100 disabled:opacity-50"
@@ -1911,7 +2092,19 @@ function subTabClass(id) {
                   @change="setExerciseProfile(t, { met: $event.target.value === '' ? '' : Number($event.target.value) })"
                 />
               </label>
+              <label class="flex min-w-0 items-center gap-1">
+                專業用語
+                <input
+                  :value="exerciseProfile(t).term"
+                  type="text"
+                  :maxlength="EXERCISE_TERM_MAX"
+                  placeholder="按 AI 可取得"
+                  class="w-32 min-w-0 rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-800"
+                  @change="setExerciseProfile(t, { term: cleanExerciseLabel($event.target.value, EXERCISE_TERM_MAX) })"
+                />
+              </label>
             </div>
+            <p v-if="exerciseProfile(t).desc" class="mt-1 text-[11px] text-slate-400">描述：{{ exerciseProfile(t).desc }}</p>
           </div>
           <p v-if="!live.exerciseTypes.length" class="text-xs text-slate-400">尚無運動快選</p>
         </div>
@@ -1933,6 +2126,7 @@ function subTabClass(id) {
             <p v-if="s.busy" class="mt-0.5">評估中…</p>
             <p v-else-if="s.error" class="mt-0.5 text-rose-700">{{ s.error }}</p>
             <template v-else>
+              <p v-if="s.term && s.term !== s.type" class="mt-0.5">專業用語：{{ s.term }}</p>
               <p class="mt-0.5">
                 記錄：{{ MODE_LABEL[s.mode] }}<template v-if="s.mode === 'reps'"> · 每分鐘 {{ s.repsPerMin }} 下</template>
                 · 類別 {{ CATEGORY_LABEL[s.category] }} · MET {{ s.met }}
@@ -1959,21 +2153,83 @@ function subTabClass(id) {
           </div>
           <p class="text-[11px] text-indigo-700">僅為粗略參考，不是醫療建議；採用前建議與醫師或教練確認。</p>
         </div>
-        <div class="flex gap-2">
-          <input
+        <div class="space-y-2 rounded-lg bg-white p-2.5 ring-1 ring-slate-200" data-testid="ex-new-type">
+          <p class="text-xs font-medium text-slate-700">新增運動項目</p>
+          <textarea
             v-model="newExerciseType"
-            type="text"
-            placeholder="新增運動類型 (如：超慢跑、游泳)"
-            class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white p-2 text-sm"
-            @keyup.enter="addExerciseTypePreset"
-          />
-          <button
-            type="button"
-            class="shrink-0 rounded-lg bg-teal-600 px-4 py-2 text-xs font-medium text-white active:bg-teal-700"
-            @click="addExerciseTypePreset"
-          >
-            新增類型
-          </button>
+            rows="2"
+            :maxlength="EXERCISE_DESC_MAX"
+            placeholder="描述動作，例如：坐在椅子上，膝蓋伸直把腳抬到水平，停 2 秒再放下"
+            class="w-full rounded-lg border border-slate-300 bg-white p-2 text-sm"
+          ></textarea>
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="flex-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white active:bg-indigo-700 disabled:opacity-50"
+              :disabled="newTypeLookup?.busy"
+              @click="lookupNewExerciseType"
+            >
+              {{ newTypeLookup?.busy ? 'AI 查詢中…' : '🔍 AI 找名稱' }}
+            </button>
+            <button
+              type="button"
+              class="shrink-0 rounded-lg bg-white px-3 py-2 text-xs text-slate-700 ring-1 ring-slate-300 active:bg-slate-50"
+              title="不查 AI，直接把輸入的文字當成名稱"
+              @click="addExerciseTypePreset"
+            >
+              直接新增
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-400">AI 會依描述找出一般用語與專業用語，並建議類別與 MET；描述也會保存，之後分析時一併參考。「直接新增」只用輸入的文字當名稱。</p>
+
+          <div v-if="newTypeLookup" class="rounded-lg bg-indigo-50 p-2.5 text-xs text-indigo-900 ring-1 ring-indigo-200">
+            <p v-if="newTypeLookup.busy">AI 查詢中…</p>
+            <p v-else-if="newTypeLookup.error" class="text-rose-700">{{ newTypeLookup.error }}</p>
+            <template v-else>
+              <p class="font-medium">AI 找到的名稱（可以修改，按「加入快選」才會儲存）</p>
+              <label class="mt-1.5 flex items-center gap-2">
+                <span class="w-16 shrink-0">一般用語</span>
+                <input
+                  v-model="newTypeLookup.name"
+                  type="text"
+                  :maxlength="EXERCISE_NAME_MAX"
+                  class="min-w-0 flex-1 rounded border border-indigo-200 bg-white px-2 py-1 text-sm text-slate-800"
+                />
+              </label>
+              <label class="mt-1 flex items-center gap-2">
+                <span class="w-16 shrink-0">專業用語</span>
+                <input
+                  v-model="newTypeLookup.term"
+                  type="text"
+                  :maxlength="EXERCISE_TERM_MAX"
+                  class="min-w-0 flex-1 rounded border border-indigo-200 bg-white px-2 py-1 text-sm text-slate-800"
+                />
+              </label>
+              <p class="mt-1.5">
+                記錄：{{ MODE_LABEL[newTypeLookup.mode] }}<template v-if="newTypeLookup.mode === 'reps'"> · 每分鐘 {{ newTypeLookup.repsPerMin }} 下</template>
+                · 類別 {{ CATEGORY_LABEL[newTypeLookup.category] }} · MET {{ newTypeLookup.met }}
+              </p>
+              <p v-if="newTypeLookup.reason" class="mt-0.5 text-indigo-800">{{ newTypeLookup.reason }}</p>
+            </template>
+            <div class="mt-2 flex gap-2">
+              <button
+                v-if="!newTypeLookup.busy && !newTypeLookup.error"
+                type="button"
+                class="rounded-lg bg-indigo-600 px-3 py-1 text-white active:bg-indigo-700"
+                @click="adoptNewExerciseType"
+              >
+                加入快選
+              </button>
+              <button
+                type="button"
+                class="rounded-lg bg-white px-3 py-1 text-slate-700 ring-1 ring-slate-300 active:bg-slate-50"
+                @click="newTypeLookup = null"
+              >
+                {{ newTypeLookup.busy || newTypeLookup.error ? '關閉' : '取消' }}
+              </button>
+            </div>
+            <p class="mt-1.5 text-[11px] text-indigo-700">僅為粗略參考，不是醫療建議。</p>
+          </div>
         </div>
         <p v-if="exerciseManageError" class="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">{{ exerciseManageError }}</p>
         <button
@@ -1996,6 +2252,7 @@ function subTabClass(id) {
             <span class="mt-0.5 text-xs text-slate-400">{{ log.time }}</span>
             <div class="min-w-0 flex-1">
               <span class="font-medium text-slate-800">{{ log.type }}</span>
+              <span v-if="log.term && log.term !== log.type" class="ml-1 text-xs text-slate-500">（{{ log.term }}）</span>
               <span
                 v-if="isRepsLog(log)"
                 class="ml-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-800"
