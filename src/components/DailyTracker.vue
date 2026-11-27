@@ -1218,24 +1218,29 @@ function subTabClass(id) {
       </div>
     </section>
 
-    <!-- Sub-tabs: one group of cards at a time -->
-    <nav class="grid grid-cols-5 gap-1 rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200" data-testid="daily-subtabs">
+    <!-- Sub-tabs: one group of cards at a time. Phone: a row on top; desktop (md+): a column on the left. -->
+    <div class="space-y-4 md:flex md:items-start md:gap-4 md:space-y-0">
+    <nav
+      class="grid grid-cols-5 gap-1 rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200 md:sticky md:top-32 md:w-36 md:shrink-0 md:grid-cols-1"
+      data-testid="daily-subtabs"
+    >
       <button
         v-for="t in subTabs"
         :key="t.id"
         type="button"
-        class="rounded-xl px-0.5 py-1.5 text-center"
+        class="rounded-xl px-0.5 py-1.5 text-center md:px-3 md:py-2.5 md:text-left"
         :class="subTab === t.id ? 'bg-teal-600 text-white' : 'text-slate-600 active:bg-slate-100'"
         :aria-pressed="subTab === t.id"
         @click="subTab = t.id"
       >
-        <span class="block whitespace-nowrap text-xs font-semibold">{{ t.label }}</span>
+        <span class="block whitespace-nowrap text-xs font-semibold md:text-sm">{{ t.label }}</span>
         <span
           class="block whitespace-nowrap text-[11px]"
           :class="subTab === t.id ? 'text-teal-50' : t.done ? 'text-teal-600' : 'text-slate-400'"
         >{{ t.done ? '✓ ' : '' }}{{ t.badge }}</span>
       </button>
     </nav>
+    <div class="min-w-0 space-y-4 md:flex-1">
 
     <!-- Hydration & Drinks -->
     <section class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" :class="subTabClass('water')">
@@ -2382,6 +2387,8 @@ function subTabClass(id) {
         <p class="text-xs text-slate-400">AI 建議僅供參考，不能取代醫師診斷。</p>
       </div>
     </section>
+    </div>
+    </div>
 
     <!-- Undo snackbar for one-tap adds -->
     <div
